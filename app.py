@@ -160,73 +160,151 @@ def get_profile_post_codes(username, session, limit):
     codes = []
     diag = {}
 
-    # ── Attempt 1: structured web_profile_info API ──────────────────────────
+    # Fetch the profile page first — needed for lsd token and HTML fallback
+    html = ""
     try:
-        r = session.get(
-            "https://www.instagram.com/api/v1/users/web_profile_info/",
-            params={"username": username},
-            timeout=20,
+        pr = session.get(
+            f"https://www.instagram.com/{username}/",
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                "Upgrade-Insecure-Requests": "1",
+            },
+            timeout=30,
         )
-        diag["api_status"] = r.status_code
-        if r.status_code == 200:
-            data = r.json()
-            user = (
-                data.get("data", {}).get("user")
-                or data.get("graphql", {}).get("user")
-                or {}
+        diag["page_status"] = pr.status_code
+        if pr.ok:
+            html = pr.text
+            diag["page_length"] = len(html)
+    except Exception as e:
+        diag["page_error"] = str(e)
+
+    # ── Attempt A: ?__a=1 (old AJAX endpoint, still works with valid auth) ──
+    if not codes:
+        try:
+            r = session.get(
+                f"https://www.instagram.com/{username}/",
+                params={"__a": "1", "__d": "dis"},
+                headers={"Accept": "application/json, text/javascript, */*"},
+                timeout=20,
             )
-            if not user:
-                diag["api_note"] = f"no user node; top-level keys={list(data.keys())}"
-            else:
-                diag["api_user_keys"] = list(user.keys())[:12]
+            diag["a1_status"] = r.status_code
+            if r.status_code == 200 and ("shortcode" in r.text or "edge_owner" in r.text):
+                data = r.json()
+                user = (
+                    data.get("graphql", {}).get("user")
+                    or data.get("data", {}).get("user")
+                    or {}
+                )
+                for edge in user.get("edge_owner_to_timeline_media", {}).get("edges", []):
+                    code = edge.get("node", {}).get("shortcode") or edge.get("node", {}).get("code")
+                    if code and code not in codes:
+                        codes.append(code)
+                diag["a1_codes"] = len(codes)
+        except Exception as e:
+            diag["a1_error"] = str(e)
+
+    # ── Attempt B: lsd token + /api/graphql POST (what the web app uses) ────
+    if not codes and html:
+        lsd = None
+        for pat in [
+            r'"LSD",\[\],\{"token":"([^"]+)"',
+            r'"LSD",\[\],"([A-Za-z0-9_-]{6,})"',
+            r'"lsd":"([A-Za-z0-9_-]{6,})"',
+        ]:
+            m = re.search(pat, html)
+            if m:
+                lsd = m.group(1)
+                break
+        diag["lsd_found"] = bool(lsd)
+
+        for doc_id in ("7950326721671168", "8508961505838141", "17880160963012870"):
+            if codes:
+                break
+            if not lsd:
+                break
+            try:
+                variables = json.dumps({
+                    "data": {"count": min(target, 12)},
+                    "username": username,
+                })
+                r = session.post(
+                    "https://www.instagram.com/api/graphql",
+                    data={
+                        "lsd": lsd,
+                        "variables": variables,
+                        "doc_id": doc_id,
+                        "server_timestamps": "true",
+                        "fb_api_caller_class": "RelayModern",
+                    },
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "X-FB-LSD": lsd,
+                        "Sec-Fetch-Dest": "empty",
+                        "Sec-Fetch-Mode": "cors",
+                        "Sec-Fetch-Site": "same-origin",
+                    },
+                    timeout=20,
+                )
+                diag[f"gql_{doc_id}_status"] = r.status_code
+                if r.status_code == 200:
+                    data = r.json()
+                    found = _parse_codes_from_json(data)
+                    codes.extend(c for c in found if c not in codes)
+                    diag[f"gql_{doc_id}_codes"] = len(codes)
+                else:
+                    diag[f"gql_{doc_id}_preview"] = r.text[:150]
+            except Exception as e:
+                diag[f"gql_{doc_id}_error"] = str(e)
+
+    # ── Attempt C: web_profile_info (rate-limited from cloud IPs but worth one try) ─
+    if not codes:
+        try:
+            r = session.get(
+                "https://www.instagram.com/api/v1/users/web_profile_info/",
+                params={"username": username},
+                timeout=20,
+            )
+            diag["api_status"] = r.status_code
+            if r.status_code == 200:
+                data = r.json()
+                user = (
+                    data.get("data", {}).get("user")
+                    or data.get("graphql", {}).get("user")
+                    or {}
+                )
                 for tl_key in ("edge_owner_to_timeline_media", "timeline_media"):
                     for edge in user.get(tl_key, {}).get("edges", []):
                         node = edge.get("node", {})
                         code = node.get("shortcode") or node.get("code")
                         if code and code not in codes:
                             codes.append(code)
-        else:
-            diag["api_preview"] = r.text[:300]
-    except Exception as e:
-        diag["api_error"] = str(e)
-
-    # ── Attempt 2: profile page HTML — extract any JSON blobs ───────────────
-    if not codes:
-        try:
-            r = session.get(
-                f"https://www.instagram.com/{username}/",
-                headers={
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Sec-Fetch-Dest": "document",
-                    "Sec-Fetch-Mode": "navigate",
-                    "Sec-Fetch-Site": "none",
-                    "Upgrade-Insecure-Requests": "1",
-                },
-                timeout=30,
-            )
-            diag["page_status"] = r.status_code
-            diag["page_length"] = len(r.text)
-            if r.ok:
-                html = r.text
-                for blob in re.findall(
-                    r'<script[^>]*type="application/json"[^>]*>(.*?)</script>',
-                    html, re.DOTALL,
-                ):
-                    try:
-                        codes += _parse_codes_from_json(json.loads(blob))
-                    except Exception:
-                        pass
-                if not codes:
-                    for m in re.finditer(r'"shortcode"\s*:\s*"([A-Za-z0-9_-]{8,15})"', html):
-                        if m.group(1) not in codes:
-                            codes.append(m.group(1))
-                if not codes:
-                    for m in re.finditer(r'/p/([A-Za-z0-9_-]{8,15})/', html):
-                        if m.group(1) not in codes:
-                            codes.append(m.group(1))
-                diag["html_codes_found"] = len(codes)
+                diag["api_codes"] = len(codes)
+            else:
+                diag["api_preview"] = r.text[:150]
         except Exception as e:
-            diag["page_error"] = str(e)
+            diag["api_error"] = str(e)
+
+    # ── Attempt D: parse embedded JSON blobs in the page HTML ───────────────
+    if not codes and html:
+        for blob in re.findall(
+            r'<script[^>]*type="application/json"[^>]*>(.*?)</script>', html, re.DOTALL
+        ):
+            try:
+                codes.extend(c for c in _parse_codes_from_json(json.loads(blob)) if c not in codes)
+            except Exception:
+                pass
+        if not codes:
+            for m in re.finditer(r'"shortcode"\s*:\s*"([A-Za-z0-9_-]{8,15})"', html):
+                if m.group(1) not in codes:
+                    codes.append(m.group(1))
+        if not codes:
+            for m in re.finditer(r'/p/([A-Za-z0-9_-]{8,15})/', html):
+                if m.group(1) not in codes:
+                    codes.append(m.group(1))
+        diag["html_codes"] = len(codes)
 
     if not codes:
         raise Exception(
