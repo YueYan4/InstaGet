@@ -421,7 +421,7 @@ def get_profile_post_codes(username, session, limit):
             f"Could not load posts for @{username}. Debug: {json.dumps(diag)}"
         )
 
-    return codes[:target], profile_total
+    return codes[:target], profile_total, diag
 
 
 def parse_url(url):
@@ -470,7 +470,7 @@ def fetch_media():
             L.download_post(post, target=session_dir)
         else:
             profile_session = _make_profile_session(rows)
-            codes, profile_total = get_profile_post_codes(identifier, profile_session, limit)
+            codes, profile_total, profile_diag = get_profile_post_codes(identifier, profile_session, limit)
             if not codes:
                 raise Exception(f"No posts found for @{identifier}.")
             for code in codes:
@@ -501,6 +501,13 @@ def fetch_media():
         resp = {"session_id": session_id, "items": items, "count": len(items)}
         if profile_total is not None:
             resp["profile_total"] = profile_total
+        if url_type == "profile":
+            resp["profile_diag"] = {
+                k: profile_diag[k]
+                for k in ("a1_has_next", "a1_cursor", "a1_codes", "a1_user_id",
+                          "a1_status", "api_status")
+                if k in profile_diag
+            }
         return jsonify(resp)
 
     except instaloader.exceptions.LoginRequiredException:

@@ -437,6 +437,7 @@
   <div class="results-header">
     <h2>Media <span class="count-badge" id="count-label"></span></h2>
   </div>
+  <p id="profile-diag-note" style="font-size:11px;color:rgba(255,255,255,0.4);word-break:break-all;margin:0 0 6px"></p>
 
   <div class="ios-tip">
     <strong>Photos:</strong> Tap to select, or hold to save directly.<br>
@@ -583,6 +584,13 @@
         countText += ` (all posts)`;
       }
       document.getElementById("count-label").textContent = countText;
+      if (data.profile_diag) {
+        const d = data.profile_diag;
+        const note = `diag: ${JSON.stringify(d)}`;
+        document.getElementById("profile-diag-note").textContent = note;
+      } else {
+        document.getElementById("profile-diag-note").textContent = "";
+      }
       document.getElementById("results").style.display = "block";
       hideStatus();
 
