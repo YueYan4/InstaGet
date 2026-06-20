@@ -219,6 +219,7 @@ def get_profile_post_codes(username, session, limit):
         diag["page_error"] = str(e)
 
     # ── Attempt A: ?__a=1 JSON with cursor pagination ───────────────────────
+    profile_total = None
     if not codes:
         try:
             cursor = None
@@ -250,12 +251,19 @@ def get_profile_post_codes(username, session, limit):
                     or {}
                 )
                 tl = user_node.get("edge_owner_to_timeline_media", {})
+                if profile_total is None:
+                    profile_total = tl.get("count")
                 for edge in tl.get("edges", []):
                     code = (edge.get("node", {}).get("shortcode")
                             or edge.get("node", {}).get("code"))
                     if code and code not in codes:
                         codes.append(code)
                 page_info = tl.get("page_info", {})
+                print(f"[profile] page={pages} got={len(tl.get('edges',[]))} "
+                      f"total_so_far={len(codes)} "
+                      f"has_next={page_info.get('has_next_page')} "
+                      f"cursor={'yes' if page_info.get('end_cursor') else 'none'}",
+                      flush=True)
                 cursor = page_info.get("end_cursor")
                 if not page_info.get("has_next_page") or not cursor:
                     break
@@ -363,7 +371,7 @@ def get_profile_post_codes(username, session, limit):
             f"Could not load posts for @{username}. Debug: {json.dumps(diag)}"
         )
 
-    return codes[:target]
+    return codes[:target], profile_total
 
 
 def parse_url(url):
@@ -406,12 +414,13 @@ def fetch_media():
         L = make_loader()
         rows = load_session_cookies(L)
 
+        profile_total = None
         if url_type == "post":
             post = instaloader.Post.from_shortcode(L.context, identifier)
             L.download_post(post, target=session_dir)
         else:
             profile_session = _make_profile_session(rows)
-            codes = get_profile_post_codes(identifier, profile_session, limit)
+            codes, profile_total = get_profile_post_codes(identifier, profile_session, limit)
             if not codes:
                 raise Exception(f"No posts found for @{identifier}.")
             for code in codes:
@@ -439,7 +448,10 @@ def fetch_media():
             for f in media_files
         ]
 
-        return jsonify({"session_id": session_id, "items": items, "count": len(items)})
+        resp = {"session_id": session_id, "items": items, "count": len(items)}
+        if profile_total is not None:
+            resp["profile_total"] = profile_total
+        return jsonify(resp)
 
     except instaloader.exceptions.LoginRequiredException:
         shutil.rmtree(session_dir, ignore_errors=True)

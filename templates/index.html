@@ -576,8 +576,13 @@
       selectedIndices.clear();
       renderGrid(data.items);
       updateSaveSelectedBtn();
-      document.getElementById("count-label").textContent =
-        `${data.count} item${data.count !== 1 ? "s" : ""}`;
+      let countText = `${data.count} item${data.count !== 1 ? "s" : ""}`;
+      if (data.profile_total != null && data.count < data.profile_total) {
+        countText += ` (of ${data.profile_total} on profile)`;
+      } else if (data.profile_total != null) {
+        countText += ` (all posts)`;
+      }
+      document.getElementById("count-label").textContent = countText;
       document.getElementById("results").style.display = "block";
       hideStatus();
 
