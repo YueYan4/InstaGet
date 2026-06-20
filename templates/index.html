@@ -342,12 +342,13 @@
 <header>
   <h1>InstaGet</h1>
   <p>Download Instagram media straight to your Photos</p>
-  <button id="setup-toggle-btn" onclick="toggleSetup()" style="
-    position:absolute; top:16px; right:16px;
-    background:rgba(255,255,255,0.15); border:none; border-radius:8px;
-    color:#fff; font-size:13px; padding:6px 12px; cursor:pointer;
-  ">⚙ Setup</button>
 </header>
+<div style="text-align:center; margin: -6px 0 4px">
+  <button id="setup-toggle-btn" onclick="toggleSetup()" style="
+    background:none; border:none; color:rgba(255,255,255,0.55);
+    font-size:12px; padding:6px 12px; cursor:pointer; letter-spacing:0.03em;
+  ">⚙ Session Setup</button>
+</div>
 
 <!-- Session setup card — shown when no session is configured, or when ⚙ Setup is tapped -->
 <div id="setup-card" class="card" style="display:none">
