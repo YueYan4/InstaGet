@@ -158,6 +158,7 @@ def _parse_codes_from_json(obj, seen=None):
 def get_profile_post_codes(username, session, limit):
     target = int(limit) if limit else 12
     codes = []
+    diag = {}
 
     # ── Attempt 1: structured web_profile_info API ──────────────────────────
     try:
@@ -166,22 +167,28 @@ def get_profile_post_codes(username, session, limit):
             params={"username": username},
             timeout=20,
         )
+        diag["api_status"] = r.status_code
         if r.status_code == 200:
             data = r.json()
-            # Handle both old (graphql.user) and new (data.user) shapes
             user = (
                 data.get("data", {}).get("user")
                 or data.get("graphql", {}).get("user")
                 or {}
             )
-            for tl_key in ("edge_owner_to_timeline_media", "timeline_media"):
-                for edge in user.get(tl_key, {}).get("edges", []):
-                    node = edge.get("node", {})
-                    code = node.get("shortcode") or node.get("code")
-                    if code and code not in codes:
-                        codes.append(code)
-    except Exception:
-        pass
+            if not user:
+                diag["api_note"] = f"no user node; top-level keys={list(data.keys())}"
+            else:
+                diag["api_user_keys"] = list(user.keys())[:12]
+                for tl_key in ("edge_owner_to_timeline_media", "timeline_media"):
+                    for edge in user.get(tl_key, {}).get("edges", []):
+                        node = edge.get("node", {})
+                        code = node.get("shortcode") or node.get("code")
+                        if code and code not in codes:
+                            codes.append(code)
+        else:
+            diag["api_preview"] = r.text[:300]
+    except Exception as e:
+        diag["api_error"] = str(e)
 
     # ── Attempt 2: profile page HTML — extract any JSON blobs ───────────────
     if not codes:
@@ -197,15 +204,18 @@ def get_profile_post_codes(username, session, limit):
                 },
                 timeout=30,
             )
+            diag["page_status"] = r.status_code
+            diag["page_length"] = len(r.text)
             if r.ok:
                 html = r.text
-                # Parse any <script type="application/json"> blobs
-                for blob in re.findall(r'<script[^>]*type="application/json"[^>]*>(.*?)</script>', html, re.DOTALL):
+                for blob in re.findall(
+                    r'<script[^>]*type="application/json"[^>]*>(.*?)</script>',
+                    html, re.DOTALL,
+                ):
                     try:
                         codes += _parse_codes_from_json(json.loads(blob))
                     except Exception:
                         pass
-                # Also catch flat "shortcode":"..." or "/p/CODE/" patterns
                 if not codes:
                     for m in re.finditer(r'"shortcode"\s*:\s*"([A-Za-z0-9_-]{8,15})"', html):
                         if m.group(1) not in codes:
@@ -214,15 +224,13 @@ def get_profile_post_codes(username, session, limit):
                     for m in re.finditer(r'/p/([A-Za-z0-9_-]{8,15})/', html):
                         if m.group(1) not in codes:
                             codes.append(m.group(1))
-        except Exception:
-            pass
+                diag["html_codes_found"] = len(codes)
+        except Exception as e:
+            diag["page_error"] = str(e)
 
     if not codes:
         raise Exception(
-            f"Could not find posts for @{username}. "
-            "Possible causes: profile is private, your sessionid is expired, "
-            "or Instagram changed their page format. "
-            "Try refreshing your sessionid in ⚙ Session Setup."
+            f"Could not load posts for @{username}. Debug: {json.dumps(diag)}"
         )
 
     return codes[:target]
