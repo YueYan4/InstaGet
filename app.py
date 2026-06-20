@@ -127,54 +127,102 @@ def _make_profile_session(rows):
             csrftoken = value
     if not has_session:
         raise Exception(
-            "No Instagram sessionid cookie in Firefox. "
-            "Open Firefox on this PC, go to instagram.com, log in, then try again."
+            "No Instagram sessionid configured. "
+            "Open ⚙ Session Setup and paste your sessionid."
         )
     if csrftoken:
         s.headers["X-CSRFToken"] = csrftoken
     return s
 
 
+def _parse_codes_from_json(obj, seen=None):
+    """Recursively walk any dict/list and collect all shortcode/code values."""
+    if seen is None:
+        seen = set()
+    codes = []
+    if isinstance(obj, dict):
+        for key in ("shortcode", "code"):
+            v = obj.get(key)
+            if isinstance(v, str) and 8 <= len(v) <= 15 and re.fullmatch(r'[A-Za-z0-9_-]+', v):
+                if v not in seen:
+                    seen.add(v)
+                    codes.append(v)
+        for v in obj.values():
+            codes += _parse_codes_from_json(v, seen)
+    elif isinstance(obj, list):
+        for item in obj:
+            codes += _parse_codes_from_json(item, seen)
+    return codes
+
+
 def get_profile_post_codes(username, session, limit):
-    """
-    Fetch the profile page HTML (exactly as a browser would) and extract
-    post shortcodes from the embedded JSON.  This avoids all private API
-    endpoints that Instagram rate-limits aggressively.
-    """
     target = int(limit) if limit else 12
+    codes = []
 
-    r = session.get(
-        f"https://www.instagram.com/{username}/",
-        # Override the CORS headers set on the session — page fetches use navigate mode
-        headers={
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "Upgrade-Insecure-Requests": "1",
-        },
-        timeout=30,
-    )
-    if r.status_code == 429:
-        raise Exception(
-            "Instagram rate limit (429). Your session cookie may be expired — "
-            "go to ⚙ Session Setup and paste a fresh sessionid from instagram.com."
+    # ── Attempt 1: structured web_profile_info API ──────────────────────────
+    try:
+        r = session.get(
+            "https://www.instagram.com/api/v1/users/web_profile_info/",
+            params={"username": username},
+            timeout=20,
         )
-    r.raise_for_status()
+        if r.status_code == 200:
+            data = r.json()
+            # Handle both old (graphql.user) and new (data.user) shapes
+            user = (
+                data.get("data", {}).get("user")
+                or data.get("graphql", {}).get("user")
+                or {}
+            )
+            for tl_key in ("edge_owner_to_timeline_media", "timeline_media"):
+                for edge in user.get(tl_key, {}).get("edges", []):
+                    node = edge.get("node", {})
+                    code = node.get("shortcode") or node.get("code")
+                    if code and code not in codes:
+                        codes.append(code)
+    except Exception:
+        pass
 
-    # Instagram embeds post data as JSON in the page; shortcodes appear as
-    # "shortcode":"ABC123" throughout the payload.
-    codes = list(dict.fromkeys(          # deduplicate, preserve order
-        m.group(1)
-        for m in re.finditer(r'"shortcode"\s*:\s*"([A-Za-z0-9_-]{10,15})"', r.text)
-    ))
+    # ── Attempt 2: profile page HTML — extract any JSON blobs ───────────────
+    if not codes:
+        try:
+            r = session.get(
+                f"https://www.instagram.com/{username}/",
+                headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Site": "none",
+                    "Upgrade-Insecure-Requests": "1",
+                },
+                timeout=30,
+            )
+            if r.ok:
+                html = r.text
+                # Parse any <script type="application/json"> blobs
+                for blob in re.findall(r'<script[^>]*type="application/json"[^>]*>(.*?)</script>', html, re.DOTALL):
+                    try:
+                        codes += _parse_codes_from_json(json.loads(blob))
+                    except Exception:
+                        pass
+                # Also catch flat "shortcode":"..." or "/p/CODE/" patterns
+                if not codes:
+                    for m in re.finditer(r'"shortcode"\s*:\s*"([A-Za-z0-9_-]{8,15})"', html):
+                        if m.group(1) not in codes:
+                            codes.append(m.group(1))
+                if not codes:
+                    for m in re.finditer(r'/p/([A-Za-z0-9_-]{8,15})/', html):
+                        if m.group(1) not in codes:
+                            codes.append(m.group(1))
+        except Exception:
+            pass
 
     if not codes:
         raise Exception(
-            f"No posts found for @{username}. "
-            "The profile may be private, or your session is expired — "
-            "try ⚙ Session Setup with a fresh sessionid."
+            f"Could not find posts for @{username}. "
+            "Possible causes: profile is private, your sessionid is expired, "
+            "or Instagram changed their page format. "
+            "Try refreshing your sessionid in ⚙ Session Setup."
         )
 
     return codes[:target]
@@ -308,6 +356,58 @@ def cleanup(session_id):
     if session_dir.exists():
         shutil.rmtree(session_dir)
     return jsonify({"ok": True})
+
+
+@app.route("/api/debug-profile")
+def debug_profile():
+    """Return raw diagnostic info to help troubleshoot profile fetching."""
+    username = request.args.get("username", "").strip()
+    if not username:
+        return jsonify({"error": "?username= required"}), 400
+
+    result = {}
+    try:
+        L = make_loader()
+        rows = load_session_cookies(L)
+        s = _make_profile_session(rows)
+    except Exception as e:
+        return jsonify({"error": f"Session setup failed: {e}"}), 500
+
+    # Test web_profile_info
+    try:
+        r = s.get(
+            "https://www.instagram.com/api/v1/users/web_profile_info/",
+            params={"username": username},
+            timeout=20,
+        )
+        result["api_status"] = r.status_code
+        result["api_preview"] = r.text[:500]
+    except Exception as e:
+        result["api_error"] = str(e)
+
+    # Test profile page
+    try:
+        r2 = s.get(
+            f"https://www.instagram.com/{username}/",
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+            },
+            timeout=30,
+        )
+        result["page_status"] = r2.status_code
+        result["page_length"] = len(r2.text)
+        # Count how many shortcodes we'd find
+        sc_count = len(re.findall(r'"shortcode"\s*:\s*"[A-Za-z0-9_-]{8,15}"', r2.text))
+        code_count = len(re.findall(r'/p/([A-Za-z0-9_-]{8,15})/', r2.text))
+        result["shortcodes_found"] = sc_count
+        result["post_urls_found"] = code_count
+    except Exception as e:
+        result["page_error"] = str(e)
+
+    return jsonify(result)
 
 
 if __name__ == "__main__":
