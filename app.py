@@ -135,69 +135,47 @@ def _make_profile_session(rows):
     return s
 
 
-def _ig_get(session, url, params=None):
-    r = session.get(url, params=params, timeout=20)
-    if r.status_code == 429:
-        raise Exception(
-            "Instagram rate limit (429). Wait a few minutes and try again."
-        )
-    r.raise_for_status()
-    return r
-
-
 def get_profile_post_codes(username, session, limit):
     """
-    Returns post shortcodes for a profile.
-    Step 1: calls web_profile_info — this also returns the first 12 posts.
-    Step 2: paginates with feed/user if more are needed.
+    Fetch the profile page HTML (exactly as a browser would) and extract
+    post shortcodes from the embedded JSON.  This avoids all private API
+    endpoints that Instagram rate-limits aggressively.
     """
-    target = int(limit) if limit else 20
+    target = int(limit) if limit else 12
 
-    r = _ig_get(
-        session,
-        "https://www.instagram.com/api/v1/users/web_profile_info/",
-        params={"username": username},
+    r = session.get(
+        f"https://www.instagram.com/{username}/",
+        # Override the CORS headers set on the session — page fetches use navigate mode
+        headers={
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+        },
+        timeout=30,
     )
-    data = r.json()
-    user = data.get("data", {}).get("user")
-    if not user:
-        raise Exception(f"Profile '{username}' not found or is private.")
+    if r.status_code == 429:
+        raise Exception(
+            "Instagram rate limit (429). Your session cookie may be expired — "
+            "go to ⚙ Session Setup and paste a fresh sessionid from instagram.com."
+        )
+    r.raise_for_status()
 
-    user_id = user["id"]
-    codes = []
+    # Instagram embeds post data as JSON in the page; shortcodes appear as
+    # "shortcode":"ABC123" throughout the payload.
+    codes = list(dict.fromkeys(          # deduplicate, preserve order
+        m.group(1)
+        for m in re.finditer(r'"shortcode"\s*:\s*"([A-Za-z0-9_-]{10,15})"', r.text)
+    ))
 
-    # web_profile_info already includes the first batch of posts
-    for edge in user.get("edge_owner_to_timeline_media", {}).get("edges", []):
-        code = edge.get("node", {}).get("shortcode")
-        if code:
-            codes.append(code)
-
-    # Paginate for more if needed
-    max_id = None
-    while len(codes) < target:
-        params = {"count": min(12, target - len(codes))}
-        if max_id:
-            params["max_id"] = max_id
-        try:
-            r = _ig_get(
-                session,
-                f"https://www.instagram.com/api/v1/feed/user/{user_id}/",
-                params=params,
-            )
-        except Exception:
-            break  # return what we have if pagination fails
-        page = r.json()
-        for item in page.get("items", []):
-            code = item.get("code")
-            if code:
-                codes.append(code)
-            if len(codes) >= target:
-                break
-        if not page.get("more_available") or not page.get("items"):
-            break
-        max_id = page.get("next_max_id")
-        if len(codes) < target:
-            time.sleep(random.uniform(2, 4))
+    if not codes:
+        raise Exception(
+            f"No posts found for @{username}. "
+            "The profile may be private, or your session is expired — "
+            "try ⚙ Session Setup with a fresh sessionid."
+        )
 
     return codes[:target]
 
