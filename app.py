@@ -155,6 +155,45 @@ def _parse_codes_from_json(obj, seen=None):
     return codes
 
 
+def _find_next_cursor(obj):
+    """Return end_cursor where has_next_page is True, or None."""
+    if isinstance(obj, dict):
+        pi = obj.get("page_info")
+        if isinstance(pi, dict) and pi.get("has_next_page") and pi.get("end_cursor"):
+            return pi["end_cursor"]
+        if obj.get("has_next_page") and obj.get("end_cursor"):
+            return obj["end_cursor"]
+        for v in obj.values():
+            r = _find_next_cursor(v)
+            if r:
+                return r
+    elif isinstance(obj, list):
+        for item in obj:
+            r = _find_next_cursor(item)
+            if r:
+                return r
+    return None
+
+
+def _codes_and_cursor_from_html(html, existing=None):
+    """Parse all JSON blobs from an Instagram HTML page; return (codes, cursor)."""
+    seen = set(existing or [])
+    codes = []
+    cursor = None
+    for blob in re.findall(
+        r'<script[^>]*type="application/json"[^>]*>(.*?)</script>', html, re.DOTALL
+    ):
+        try:
+            parsed = json.loads(blob)
+            codes += _parse_codes_from_json(parsed, seen)
+            seen.update(codes)
+            if not cursor:
+                cursor = _find_next_cursor(parsed)
+        except Exception:
+            pass
+    return codes, cursor
+
+
 def get_profile_post_codes(username, session, limit):
     target = int(limit) if limit else 12
     codes = []
@@ -405,16 +444,46 @@ def get_profile_post_codes(username, session, limit):
         except Exception as e:
             diag["api_error"] = str(e)
 
-    # ── Attempt E: JSON blobs embedded in profile page HTML ─────────────────
+    # ── Attempt E: JSON blobs in page HTML + cursor-based HTML pagination ────
     if not codes and html:
-        for blob in re.findall(
-            r'<script[^>]*type="application/json"[^>]*>(.*?)</script>', html, re.DOTALL
-        ):
-            try:
-                codes.extend(c for c in _parse_codes_from_json(json.loads(blob)) if c not in codes)
-            except Exception:
-                pass
+        new_codes, html_cursor = _codes_and_cursor_from_html(html)
+        codes.extend(c for c in new_codes if c not in codes)
         diag["html_codes"] = len(codes)
+        diag["html_cursor"] = bool(html_cursor)
+        print(f"[profile] html page=1 codes={len(codes)} cursor={'yes' if html_cursor else 'no'}",
+              flush=True)
+
+        # Paginate by requesting ?max_id=CURSOR — Instagram SSR renders next posts
+        page = 2
+        cursor = html_cursor
+        while codes and len(codes) < target and cursor:
+            time.sleep(random.uniform(3, 5))
+            try:
+                r = session.get(
+                    f"https://www.instagram.com/{username}/",
+                    params={"max_id": cursor},
+                    headers={
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Sec-Fetch-Dest": "document",
+                        "Sec-Fetch-Mode": "navigate",
+                        "Sec-Fetch-Site": "none",
+                    },
+                    timeout=30,
+                )
+                diag[f"html_p{page}_status"] = r.status_code
+                if not r.ok:
+                    break
+                new_codes, cursor = _codes_and_cursor_from_html(r.text, existing=codes)
+                codes.extend(c for c in new_codes if c not in codes)
+                diag[f"html_p{page}_new"] = len(new_codes)
+                print(f"[profile] html page={page} new={len(new_codes)} total={len(codes)} "
+                      f"cursor={'yes' if cursor else 'no'}", flush=True)
+                if not new_codes:
+                    break
+            except Exception as e:
+                diag[f"html_p{page}_err"] = str(e)
+                break
+            page += 1
 
     if not codes:
         raise Exception(
@@ -504,8 +573,9 @@ def fetch_media():
         if url_type == "profile":
             resp["profile_diag"] = {
                 k: profile_diag[k]
-                for k in ("a1_has_next", "a1_cursor", "a1_codes", "a1_user_id",
-                          "a1_status", "api_status")
+                for k in ("a1_status", "a1_json_error", "a1_has_next", "a1_cursor",
+                          "a1_codes", "a1_user_id", "api_status",
+                          "html_codes", "html_cursor", "html_p2_status", "html_p2_new")
                 if k in profile_diag
             }
         return jsonify(resp)
