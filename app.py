@@ -218,61 +218,111 @@ def get_profile_post_codes(username, session, limit):
     except Exception as e:
         diag["page_error"] = str(e)
 
-    # ── Attempt A: ?__a=1 JSON with cursor pagination ───────────────────────
+    # ── Attempt A: ?__a=1 first page ────────────────────────────────────────
     profile_total = None
+    a1_cursor = None
+    a1_user_id = None
     if not codes:
         try:
-            cursor = None
-            pages = 0
-            while len(codes) < target:
-                params = {"__a": "1"}
-                if cursor:
-                    params["max_id"] = cursor
-                r = session.get(
-                    f"https://www.instagram.com/{username}/",
-                    params=params,
-                    headers={"Accept": "application/json, text/javascript, */*"},
-                    timeout=20,
-                )
-                if pages == 0:
-                    diag["a1_status"] = r.status_code
-                    diag["a1_preview"] = r.text[:300]
-                pages += 1
-                if not (200 <= r.status_code < 300):
-                    break
+            r = session.get(
+                f"https://www.instagram.com/{username}/",
+                params={"__a": "1"},
+                headers={"Accept": "application/json, text/javascript, */*"},
+                timeout=20,
+            )
+            diag["a1_status"] = r.status_code
+            diag["a1_preview"] = r.text[:300]
+            if 200 <= r.status_code < 300:
                 try:
                     data = r.json()
+                    user_node = (
+                        data.get("graphql", {}).get("user")
+                        or data.get("data", {}).get("user")
+                        or {}
+                    )
+                    a1_user_id = user_node.get("id")
+                    tl = user_node.get("edge_owner_to_timeline_media", {})
+                    profile_total = tl.get("count")
+                    for edge in tl.get("edges", []):
+                        code = (edge.get("node", {}).get("shortcode")
+                                or edge.get("node", {}).get("code"))
+                        if code and code not in codes:
+                            codes.append(code)
+                    page_info = tl.get("page_info", {})
+                    a1_cursor = page_info.get("end_cursor") if page_info.get("has_next_page") else None
+                    diag["a1_codes"] = len(codes)
+                    diag["a1_has_next"] = page_info.get("has_next_page")
+                    diag["a1_cursor"] = bool(a1_cursor)
+                    diag["a1_user_id"] = a1_user_id
+                    print(f"[profile] page=1 codes={len(codes)} total={profile_total} "
+                          f"has_next={page_info.get('has_next_page')} cursor={'yes' if a1_cursor else 'none'}",
+                          flush=True)
                 except Exception as e:
                     diag["a1_json_error"] = str(e)
-                    break
-                user_node = (
-                    data.get("graphql", {}).get("user")
-                    or data.get("data", {}).get("user")
-                    or {}
-                )
-                tl = user_node.get("edge_owner_to_timeline_media", {})
-                if profile_total is None:
-                    profile_total = tl.get("count")
-                for edge in tl.get("edges", []):
-                    code = (edge.get("node", {}).get("shortcode")
-                            or edge.get("node", {}).get("code"))
-                    if code and code not in codes:
-                        codes.append(code)
-                page_info = tl.get("page_info", {})
-                print(f"[profile] page={pages} got={len(tl.get('edges',[]))} "
-                      f"total_so_far={len(codes)} "
-                      f"has_next={page_info.get('has_next_page')} "
-                      f"cursor={'yes' if page_info.get('end_cursor') else 'none'}",
-                      flush=True)
-                cursor = page_info.get("end_cursor")
-                if not page_info.get("has_next_page") or not cursor:
-                    break
-                if len(codes) < target:
-                    time.sleep(random.uniform(1.5, 2.5))
-            diag["a1_pages"] = pages
-            diag["a1_codes"] = len(codes)
         except Exception as e:
             diag["a1_error"] = str(e)
+
+    # ── Attempt A2: paginate via feed/user/{id}/ with cursor from A ─────────
+    if codes and len(codes) < target and (a1_cursor or a1_user_id):
+        uid = a1_user_id or user_id
+        cursor = a1_cursor
+        page = 2
+        while uid and len(codes) < target:
+            time.sleep(random.uniform(4, 7))  # generous delay to avoid 429
+            params = {"count": min(12, target - len(codes))}
+            if cursor:
+                params["max_id"] = cursor
+            # Try feed/user endpoint first, fall back to ?__a=1 with max_id
+            for url, extra_params in [
+                (f"https://www.instagram.com/api/v1/feed/user/{uid}/", params),
+                (f"https://www.instagram.com/{username}/", {"__a": "1", **params}),
+            ]:
+                try:
+                    r = session.get(
+                        url, params=extra_params,
+                        headers={"Accept": "application/json, text/javascript, */*"},
+                        timeout=20,
+                    )
+                    diag[f"page{page}_status"] = r.status_code
+                    if r.status_code == 429:
+                        time.sleep(10)
+                        r = session.get(url, params=extra_params,
+                                        headers={"Accept": "application/json, text/javascript, */*"},
+                                        timeout=20)
+                        diag[f"page{page}_retry"] = r.status_code
+                    if not (200 <= r.status_code < 300):
+                        continue
+                    data = r.json()
+                    # feed/user returns items[], ?__a=1 returns graphql.user
+                    new_codes = []
+                    items = data.get("items")
+                    if items is not None:
+                        for item in items:
+                            c = item.get("code") or item.get("shortcode")
+                            if c and c not in codes:
+                                new_codes.append(c)
+                        pg = {}
+                        cursor = data.get("next_max_id") if data.get("more_available") else None
+                    else:
+                        unode = (data.get("graphql", {}).get("user")
+                                 or data.get("data", {}).get("user") or {})
+                        tl2 = unode.get("edge_owner_to_timeline_media", {})
+                        for edge in tl2.get("edges", []):
+                            c = edge.get("node", {}).get("shortcode") or edge.get("node", {}).get("code")
+                            if c and c not in codes:
+                                new_codes.append(c)
+                        pi2 = tl2.get("page_info", {})
+                        cursor = pi2.get("end_cursor") if pi2.get("has_next_page") else None
+                    codes.extend(new_codes)
+                    diag[f"page{page}_codes"] = len(new_codes)
+                    print(f"[profile] page={page} new={len(new_codes)} total={len(codes)} "
+                          f"cursor={'yes' if cursor else 'none'}", flush=True)
+                    break  # one of the two URLs worked
+                except Exception as e:
+                    diag[f"page{page}_err"] = str(e)
+            if not cursor:
+                break
+            page += 1
 
     # ── Attempt B: feed/user/{id}/ with extracted user_id ───────────────────
     if not codes and user_id:
