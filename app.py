@@ -105,7 +105,7 @@ def _make_profile_session(rows):
         ),
         "Accept": "*/*",
         "Accept-Language": "en-US,en;q=0.5",
-        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Encoding": "gzip, deflate",
         "X-IG-App-ID": "936619743392459",
         "X-Requested-With": "XMLHttpRequest",
         "Referer": "https://www.instagram.com/",
