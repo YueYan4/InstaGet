@@ -218,33 +218,51 @@ def get_profile_post_codes(username, session, limit):
     except Exception as e:
         diag["page_error"] = str(e)
 
-    # ── Attempt A: ?__a=1 JSON (returns data for authenticated users) ────────
+    # ── Attempt A: ?__a=1 JSON with cursor pagination ───────────────────────
     if not codes:
         try:
-            r = session.get(
-                f"https://www.instagram.com/{username}/",
-                params={"__a": "1"},
-                headers={"Accept": "application/json, text/javascript, */*"},
-                timeout=20,
-            )
-            diag["a1_status"] = r.status_code
-            diag["a1_preview"] = r.text[:300]
-            if 200 <= r.status_code < 300:
+            cursor = None
+            pages = 0
+            while len(codes) < target:
+                params = {"__a": "1"}
+                if cursor:
+                    params["max_id"] = cursor
+                r = session.get(
+                    f"https://www.instagram.com/{username}/",
+                    params=params,
+                    headers={"Accept": "application/json, text/javascript, */*"},
+                    timeout=20,
+                )
+                if pages == 0:
+                    diag["a1_status"] = r.status_code
+                    diag["a1_preview"] = r.text[:300]
+                pages += 1
+                if not (200 <= r.status_code < 300):
+                    break
                 try:
                     data = r.json()
-                    user = (
-                        data.get("graphql", {}).get("user")
-                        or data.get("data", {}).get("user")
-                        or {}
-                    )
-                    for edge in user.get("edge_owner_to_timeline_media", {}).get("edges", []):
-                        code = (edge.get("node", {}).get("shortcode")
-                                or edge.get("node", {}).get("code"))
-                        if code and code not in codes:
-                            codes.append(code)
-                    diag["a1_codes"] = len(codes)
                 except Exception as e:
                     diag["a1_json_error"] = str(e)
+                    break
+                user_node = (
+                    data.get("graphql", {}).get("user")
+                    or data.get("data", {}).get("user")
+                    or {}
+                )
+                tl = user_node.get("edge_owner_to_timeline_media", {})
+                for edge in tl.get("edges", []):
+                    code = (edge.get("node", {}).get("shortcode")
+                            or edge.get("node", {}).get("code"))
+                    if code and code not in codes:
+                        codes.append(code)
+                page_info = tl.get("page_info", {})
+                cursor = page_info.get("end_cursor")
+                if not page_info.get("has_next_page") or not cursor:
+                    break
+                if len(codes) < target:
+                    time.sleep(random.uniform(1.5, 2.5))
+            diag["a1_pages"] = pages
+            diag["a1_codes"] = len(codes)
         except Exception as e:
             diag["a1_error"] = str(e)
 
