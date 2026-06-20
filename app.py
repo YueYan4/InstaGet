@@ -363,26 +363,48 @@ def get_profile_post_codes(username, session, limit):
                 break
             page += 1
 
-    # ── Attempt B: feed/user/{id}/ with extracted user_id ───────────────────
+    # ── Attempt B: feed/user/{id}/ with pagination ──────────────────────────
     if not codes and user_id:
-        try:
-            r = session.get(
-                f"https://www.instagram.com/api/v1/feed/user/{user_id}/",
-                params={"count": min(target, 12)},
-                timeout=20,
-            )
-            diag["feed_status"] = r.status_code
-            if r.status_code == 200:
+        feed_cursor = None
+        feed_page = 1
+        while len(codes) < target:
+            try:
+                params = {"count": min(12, target - len(codes))}
+                if feed_cursor:
+                    params["max_id"] = feed_cursor
+                r = session.get(
+                    f"https://www.instagram.com/api/v1/feed/user/{user_id}/",
+                    params=params,
+                    timeout=20,
+                )
+                if feed_page == 1:
+                    diag["feed_status"] = r.status_code
+                if r.status_code == 429:
+                    diag[f"feed_p{feed_page}_429"] = True
+                    time.sleep(10)
+                    continue
+                if r.status_code != 200:
+                    diag["feed_preview"] = r.text[:200]
+                    break
                 data = r.json()
+                new_items = 0
                 for item in data.get("items", []):
                     code = item.get("code") or item.get("shortcode")
                     if code and code not in codes:
                         codes.append(code)
-                diag["feed_codes"] = len(codes)
-            else:
-                diag["feed_preview"] = r.text[:200]
-        except Exception as e:
-            diag["feed_error"] = str(e)
+                        new_items += 1
+                diag[f"feed_p{feed_page}"] = new_items
+                print(f"[profile] feed page={feed_page} new={new_items} total={len(codes)}", flush=True)
+                if not data.get("more_available") or not data.get("next_max_id"):
+                    break
+                feed_cursor = data["next_max_id"]
+                feed_page += 1
+                if len(codes) < target:
+                    time.sleep(random.uniform(3, 5))
+            except Exception as e:
+                diag[f"feed_p{feed_page}_err"] = str(e)
+                break
+        diag["feed_codes"] = len(codes)
 
     # ── Attempt C: lsd + /api/graphql POST ──────────────────────────────────
     if not codes and lsd:
@@ -573,9 +595,11 @@ def fetch_media():
         if url_type == "profile":
             resp["profile_diag"] = {
                 k: profile_diag[k]
-                for k in ("a1_status", "a1_json_error", "a1_has_next", "a1_cursor",
-                          "a1_codes", "a1_user_id", "api_status",
-                          "html_codes", "html_cursor", "html_p2_status", "html_p2_new")
+                for k in ("a1_status", "a1_json_error",
+                          "user_id_found", "feed_status", "feed_codes",
+                          "feed_p1", "feed_p2", "feed_p3",
+                          "html_codes", "html_cursor",
+                          "api_status")
                 if k in profile_diag
             }
         return jsonify(resp)
