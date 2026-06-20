@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>InstaGet</title>
+  <style>
+    :root {
+      --bg: #0d0d0d;
+      --surface: #1a1a1a;
+      --surface2: #262626;
+      --border: #333;
+      --text: #f0f0f0;
+      --text-dim: #888;
+      --radius: 14px;
+      --green: #30d158;
+      --red: #ff453a;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100dvh;
+      padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    }
+
+    header {
+      position: relative;
+      padding: 24px 20px 16px;
+      text-align: center;
+    }
+    header h1 {
+      font-size: 28px;
+      font-weight: 700;
+      background: linear-gradient(135deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    header p { color: var(--text-dim); font-size: 13px; margin-top: 4px; }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin: 0 16px 16px;
+    }
+
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 8px;
+    }
+
+    input[type="url"], input[type="number"] {
+      width: 100%;
+      padding: 13px 14px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-size: 15px;
+      outline: none;
+      -webkit-appearance: none;
+    }
+    input:focus { border-color: #dc2743; }
+    input::placeholder { color: var(--text-dim); }
+
+    .input-row { display: flex; gap: 8px; align-items: stretch; }
+    .input-row input { flex: 1; min-width: 0; }
+    .input-action-btn {
+      flex: 0 0 auto;
+      padding: 0 14px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      margin: 0; width: auto;
+      -webkit-tap-highlight-color: transparent;
+      transition: opacity 0.15s;
+    }
+    .input-action-btn:active { opacity: 0.6; }
+    #clear-btn { display: none; color: var(--text-dim); }
+
+    .row { display: flex; gap: 10px; align-items: flex-end; }
+
+    button {
+      display: block;
+      width: 100%;
+      padding: 14px;
+      background: linear-gradient(135deg, #dc2743, #bc1888);
+      color: #fff;
+      font-size: 16px;
+      font-weight: 600;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      margin-top: 12px;
+      -webkit-tap-highlight-color: transparent;
+      transition: opacity 0.15s;
+    }
+    button:active { opacity: 0.8; }
+    button:disabled { opacity: 0.4; cursor: default; }
+    .btn-green { background: var(--green); color: #000; }
+
+    .hint { font-size: 12px; color: var(--text-dim); text-align: center; margin: 6px 0 0; }
+
+    #status {
+      margin: 0 16px 12px;
+      padding: 13px 16px;
+      border-radius: var(--radius);
+      font-size: 14px;
+      display: none;
+    }
+    #status.info  { background: #1c2a3a; border: 1px solid #2a4a6a; color: #64b5f6; }
+    #status.error { background: #2a1a1a; border: 1px solid #5a2a2a; color: var(--red); }
+    #status.success { background: #1a2a1a; border: 1px solid #2a5a2a; color: var(--green); }
+
+    .spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid currentColor;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #results { display: none; padding: 0 16px 40px; }
+
+    .results-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .results-header h2 { font-size: 16px; font-weight: 600; }
+    .count-badge {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 3px 10px;
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+
+    .ios-tip {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+      margin-bottom: 12px;
+      font-size: 13px;
+      color: var(--text-dim);
+      line-height: 1.6;
+    }
+    .ios-tip strong { color: var(--text); }
+
+    .action-row { display: flex; gap: 8px; margin-bottom: 12px; }
+    .action-row button { margin: 0; flex: 1; }
+
+    /* Selection overlay — always active */
+    .select-overlay {
+      position: absolute;
+      inset: 0;
+      pointer-events: auto;
+    }
+
+    /* Circle indicator — always visible */
+    .select-check {
+      position: absolute;
+      top: 6px; left: 6px;
+      width: 24px; height: 24px;
+      border-radius: 50%;
+      border: 2px solid rgba(255,255,255,0.85);
+      background: rgba(0,0,0,0.35);
+      display: flex;
+      align-items: center; justify-content: center;
+      font-size: 13px; color: transparent;
+      pointer-events: none;
+    }
+    .selected .select-check {
+      background: #dc2743;
+      border-color: #dc2743;
+      color: #fff;
+    }
+
+    /* Dim unselected items when at least one is selected */
+    .grid.has-selection .media-item:not(.selected) { opacity: 0.65; }
+
+    #save-selected-btn:disabled { opacity: 0.4; }
+
+    .progress-bar-wrap {
+      background: var(--surface2);
+      border-radius: 4px;
+      height: 4px;
+      overflow: hidden;
+      margin-bottom: 12px;
+      display: none;
+    }
+    .progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #dc2743, #bc1888);
+      border-radius: 4px;
+      transition: width 0.3s;
+      width: 0%;
+    }
+
+    /* ── Grid ───────────────────────────────── */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 3px;
+    }
+
+    .media-item {
+      position: relative;
+      aspect-ratio: 1;
+      background: var(--surface2);
+      overflow: hidden;
+      border-radius: 6px;
+    }
+
+    /* ── Images — NO overlay so long-press hits <img> directly ── */
+    .media-item img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+      /* pointer-events default (auto) so iOS long-press works */
+    }
+
+    /* ── Videos ──────────────────────────────── */
+    .media-item video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    .video-badge {
+      position: absolute;
+      top: 6px; left: 6px;
+      background: rgba(0,0,0,0.65);
+      border-radius: 4px;
+      padding: 2px 6px;
+      font-size: 10px;
+      font-weight: 700;
+      color: #fff;
+      pointer-events: none;
+    }
+
+    /* "Open to Save" button for videos */
+    .open-video-btn {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      background: rgba(0,0,0,0.7);
+      color: #fff;
+      border: none;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 6px 0;
+      cursor: pointer;
+      letter-spacing: 0.3px;
+      border-radius: 0;
+      margin: 0; width: 100%;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .open-video-btn:active { background: rgba(0,0,0,0.9); }
+
+    /* Mode tabs */
+    .mode-tabs {
+      display: flex;
+      background: var(--surface2);
+      border-radius: 10px;
+      padding: 3px;
+      margin-bottom: 14px;
+      gap: 3px;
+    }
+    .tab {
+      flex: 1; padding: 9px 0;
+      background: transparent; border: none; border-radius: 8px;
+      color: var(--text-dim); font-size: 14px; font-weight: 600;
+      cursor: pointer; margin: 0; width: auto;
+      -webkit-tap-highlight-color: transparent;
+      transition: background 0.15s, color 0.15s;
+    }
+    .tab.active { background: var(--surface); color: var(--text); }
+    .tab:active { opacity: 0.7; }
+
+    /* @ prefix for username field */
+    .at-wrap {
+      flex: 1; display: flex; min-width: 0;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 10px; overflow: hidden;
+    }
+    .at-wrap:focus-within { border-color: #dc2743; }
+    .at-sign {
+      padding: 0 2px 0 14px; color: var(--text-dim);
+      font-size: 15px; display: flex; align-items: center;
+    }
+    .at-wrap input {
+      flex: 1; padding: 13px 14px 13px 2px;
+      background: transparent; border: none;
+      border-radius: 0; color: var(--text); font-size: 15px; outline: none;
+    }
+
+    /* Saved checkmark */
+    .save-indicator {
+      position: absolute;
+      top: 6px; right: 6px;
+      width: 22px; height: 22px;
+      background: var(--green);
+      border-radius: 50%;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      pointer-events: none;
+    }
+    .save-indicator.show { display: flex; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>InstaGet</h1>
+  <p>Download Instagram media straight to your Photos</p>
+  <button id="setup-toggle-btn" onclick="toggleSetup()" style="
+    position:absolute; top:16px; right:16px;
+    background:rgba(255,255,255,0.15); border:none; border-radius:8px;
+    color:#fff; font-size:13px; padding:6px 12px; cursor:pointer;
+  ">⚙ Setup</button>
+</header>
+
+<!-- Session setup card — shown when no session is configured, or when ⚙ Setup is tapped -->
+<div id="setup-card" class="card" style="display:none">
+  <h2 style="margin:0 0 6px">⚙ Instagram Session Setup</h2>
+  <p class="hint" style="margin-bottom:14px">
+    InstaGet needs your Instagram <strong>sessionid</strong> cookie to download media.
+    Get it from any browser:
+  </p>
+  <ol style="padding-left:18px;margin:0 0 16px;color:var(--text-dim);font-size:14px;line-height:1.8">
+    <li>Open <strong>instagram.com</strong> in Chrome, Firefox, or Safari and log in</li>
+    <li>Open DevTools: <strong>F12</strong> (desktop) or Share → <em>Request Desktop Site</em> then F12</li>
+    <li>Go to <strong>Application</strong> (Chrome) / <strong>Storage</strong> (Firefox) tab</li>
+    <li>Click <strong>Cookies → https://www.instagram.com</strong></li>
+    <li>Copy the value of <strong>sessionid</strong> (and optionally <strong>csrftoken</strong>)</li>
+  </ol>
+  <label for="setup-sessionid">sessionid <span style="color:#dc2743">*</span></label>
+  <input type="password" id="setup-sessionid" placeholder="Paste your sessionid here"
+    autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"
+    style="margin-bottom:10px" />
+  <label for="setup-csrftoken">csrftoken <span style="font-weight:400;color:var(--text-dim)">(optional but recommended)</span></label>
+  <input type="password" id="setup-csrftoken" placeholder="Paste your csrftoken here"
+    autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"
+    style="margin-bottom:14px" />
+  <button onclick="saveSession()">Save Session</button>
+  <p class="hint" style="margin-top:10px">
+    On Render: also add <code>INSTAGRAM_SESSION_ID</code> as an environment variable
+    in your Render dashboard so it survives redeploys.
+  </p>
+</div>
+
+<div class="card">
+  <div class="mode-tabs">
+    <button class="tab active" id="tab-post" onclick="setMode('post')">Post / Reel</button>
+    <button class="tab" id="tab-profile" onclick="setMode('profile')">Profile</button>
+  </div>
+
+  <!-- Post / Reel mode -->
+  <div id="post-section">
+    <label for="url-input">Instagram URL</label>
+    <div class="input-row">
+      <input
+        type="url"
+        id="url-input"
+        placeholder="https://www.instagram.com/p/…"
+        autocomplete="off"
+        autocorrect="off"
+        autocapitalize="none"
+        spellcheck="false"
+      />
+      <button class="input-action-btn" type="button" onclick="pasteFromClipboard()">Paste</button>
+      <button class="input-action-btn" id="clear-btn" type="button" onclick="clearInput()">✕</button>
+    </div>
+  </div>
+
+  <!-- Profile mode -->
+  <div id="profile-section" style="display:none">
+    <label for="username-input">Instagram Username</label>
+    <div class="input-row">
+      <div class="at-wrap">
+        <span class="at-sign">@</span>
+        <input
+          type="text"
+          id="username-input"
+          placeholder="username"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="none"
+          spellcheck="false"
+        />
+      </div>
+      <button class="input-action-btn" type="button" onclick="clearUsername()">✕</button>
+    </div>
+    <div style="margin-top:10px">
+      <label for="limit-input">Posts to download <span style="font-weight:400;text-transform:none;letter-spacing:0">(newest first)</span></label>
+      <input type="number" id="limit-input" placeholder="20" value="20" min="1" max="500" />
+    </div>
+  </div>
+
+  <p class="hint" id="mode-hint">Tap <strong>⚙ Setup</strong> to configure your Instagram session if you haven't already.</p>
+  <button id="fetch-btn" onclick="fetchMedia()">Get Media</button>
+</div>
+
+<div id="status"></div>
+
+<div id="results">
+  <div class="results-header">
+    <h2>Media <span class="count-badge" id="count-label"></span></h2>
+  </div>
+
+  <div class="ios-tip">
+    <strong>Photos:</strong> Tap to select, or hold to save directly.<br>
+    <strong>Videos:</strong> Tap to select, or tap "Open" → share button → "Save Video".
+  </div>
+
+  <div class="action-row">
+    <button class="btn-green" id="save-all-btn" onclick="saveAll()">⬇ Save All</button>
+    <button class="btn-green" id="save-selected-btn" onclick="saveSelected()" disabled>Save Selected</button>
+  </div>
+  <div class="progress-bar-wrap" id="progress-wrap">
+    <div class="progress-bar" id="progress-bar"></div>
+  </div>
+
+  <div class="grid" id="grid"></div>
+</div>
+
+<script>
+  let currentItems = [];
+  let preloadedBlobs = [];
+  let selectedIndices = new Set();
+  let currentMode = 'post';
+  let sessionConfigured = false;
+
+  // Check session on load
+  async function checkSession() {
+    try {
+      const r = await fetch('/api/session-status');
+      const d = await r.json();
+      sessionConfigured = d.configured;
+      if (!sessionConfigured) {
+        document.getElementById('setup-card').style.display = '';
+        document.getElementById('setup-toggle-btn').textContent = '⚙ Setup ●';
+        document.getElementById('setup-toggle-btn').style.background = 'rgba(220,39,67,0.7)';
+      }
+    } catch {}
+  }
+  checkSession();
+
+  function toggleSetup() {
+    const card = document.getElementById('setup-card');
+    card.style.display = card.style.display === 'none' ? '' : 'none';
+  }
+
+  async function saveSession() {
+    const sessionid = document.getElementById('setup-sessionid').value.trim();
+    const csrftoken = document.getElementById('setup-csrftoken').value.trim();
+    if (!sessionid) { showStatus('sessionid is required.', 'error'); return; }
+    showStatus('<span class="spinner"></span> Saving…', 'info');
+    try {
+      const r = await fetch('/api/save-session', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({sessionid, csrftoken})
+      });
+      const d = await r.json();
+      if (!r.ok) { showStatus('⚠ ' + (d.error || 'Save failed.'), 'error'); return; }
+      sessionConfigured = true;
+      document.getElementById('setup-card').style.display = 'none';
+      document.getElementById('setup-toggle-btn').textContent = '⚙ Setup';
+      document.getElementById('setup-toggle-btn').style.background = 'rgba(255,255,255,0.15)';
+      document.getElementById('setup-sessionid').value = '';
+      document.getElementById('setup-csrftoken').value = '';
+      showStatus('✓ Session saved. You can now download media.', 'success');
+    } catch (e) {
+      showStatus('⚠ ' + e.message, 'error');
+    }
+  }
+
+  function setMode(mode) {
+    currentMode = mode;
+    document.getElementById('post-section').style.display    = mode === 'post'    ? '' : 'none';
+    document.getElementById('profile-section').style.display = mode === 'profile' ? '' : 'none';
+    document.getElementById('tab-post').classList.toggle('active',    mode === 'post');
+    document.getElementById('tab-profile').classList.toggle('active', mode === 'profile');
+    document.getElementById('mode-hint').textContent =
+      mode === 'profile'
+        ? 'Downloads the most recent posts from a public profile.'
+        : 'Must be logged into Instagram in Firefox on this computer.';
+    hideStatus();
+    document.getElementById('results').style.display = 'none';
+  }
+
+  function clearUsername() {
+    document.getElementById('username-input').value = '';
+  }
+
+  function showStatus(msg, type = "info") {
+    const el = document.getElementById("status");
+    el.style.display = "block";
+    el.className = type;
+    el.innerHTML = msg;
+  }
+  function hideStatus() {
+    document.getElementById("status").style.display = "none";
+  }
+
+  async function fetchMedia() {
+    const btn = document.getElementById("fetch-btn");
+    const limit = document.getElementById("limit-input")?.value.trim();
+
+    let url;
+    if (currentMode === 'profile') {
+      const username = document.getElementById("username-input").value.trim().replace(/^@/, '');
+      if (!username) { showStatus("Enter an Instagram username.", "error"); return; }
+      url = `https://www.instagram.com/${username}/`;
+    } else {
+      url = document.getElementById("url-input").value.trim();
+      if (!url) { showStatus("Please enter an Instagram URL.", "error"); return; }
+    }
+
+    btn.disabled = true;
+    document.getElementById("results").style.display = "none";
+    const loadingMsg = currentMode === 'profile'
+      ? '<span class="spinner"></span> Fetching profile posts… this can take a minute.'
+      : '<span class="spinner"></span> Fetching media… this may take a moment.';
+    showStatus(loadingMsg, "info");
+
+    try {
+      const body = { url };
+      if (limit) body.limit = parseInt(limit);
+
+      const res = await fetch("/api/fetch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        showStatus("&#x26A0; " + (data.error || "Unknown error."), "error");
+        return;
+      }
+
+      currentItems = data.items;
+      preloadedBlobs = [];
+      selectedIndices.clear();
+      renderGrid(data.items);
+      updateSaveSelectedBtn();
+      document.getElementById("count-label").textContent =
+        `${data.count} item${data.count !== 1 ? "s" : ""}`;
+      document.getElementById("results").style.display = "block";
+      hideStatus();
+
+      // Pre-fetch blobs in the background so Save All can fire synchronously later
+      preloadAllBlobs(data.items);
+
+    } catch (e) {
+      showStatus("&#x26A0; Network error. Is the server running?", "error");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function renderGrid(items) {
+    const grid = document.getElementById("grid");
+    grid.innerHTML = "";
+    items.forEach((item, i) => {
+      const div = document.createElement("div");
+      div.className = "media-item";
+      div.id = `item-${i}`;
+
+      const selectOverlay = `
+        <div class="select-overlay" onclick="toggleItemSelection(${i})"></div>
+        <span class="select-check">✓</span>
+      `;
+
+      if (item.type === "image") {
+        div.innerHTML = `
+          <img src="${item.url}" loading="lazy" alt="Photo ${i + 1}" />
+          ${selectOverlay}
+          <div class="save-indicator" id="saved-${i}">✓</div>
+        `;
+      } else {
+        div.innerHTML = `
+          <video src="${item.url}" preload="metadata" playsinline muted></video>
+          <span class="video-badge">VIDEO</span>
+          <button class="open-video-btn" id="open-btn-${i}" onclick="openVideo(${i}, event)">TAP TO OPEN &amp; SAVE</button>
+          ${selectOverlay}
+          <div class="save-indicator" id="saved-${i}">✓</div>
+        `;
+      }
+
+      grid.appendChild(div);
+    });
+  }
+
+  function openVideo(index, event) {
+    event.stopPropagation();
+    window.open(currentItems[index].url, "_blank");
+    markSaved(index);
+  }
+
+  function markSaved(index) {
+    const el = document.getElementById(`saved-${index}`);
+    if (el) el.classList.add("show");
+  }
+
+  // ── Selection ─────────────────────────────────────────────────────
+  function toggleItemSelection(index) {
+    const item = document.getElementById(`item-${index}`);
+    if (selectedIndices.has(index)) {
+      selectedIndices.delete(index);
+      item.classList.remove("selected");
+    } else {
+      selectedIndices.add(index);
+      item.classList.add("selected");
+    }
+    updateSaveSelectedBtn();
+  }
+
+  function updateSaveSelectedBtn() {
+    const btn  = document.getElementById("save-selected-btn");
+    const grid = document.getElementById("grid");
+    const n    = selectedIndices.size;
+    btn.textContent = n > 0 ? `⬇ Save Selected (${n})` : "Save Selected";
+    btn.disabled    = n === 0;
+    grid.classList.toggle("has-selection", n > 0);
+  }
+
+  function saveSelected() {
+    const indices = Array.from(selectedIndices).sort((a, b) => a - b);
+    const missing = indices.filter(i => !preloadedBlobs[i]);
+    if (missing.length) {
+      showStatus(`<span class="spinner"></span> Still loading ${missing.length} file(s)… try again shortly.`, "info");
+      return;
+    }
+    shareTasks(indices.map(i => makeTask(i)));
+  }
+
+  // ── Pre-loading blobs in background ──────────────────────────────
+  async function preloadAllBlobs(items) {
+    preloadedBlobs = new Array(items.length).fill(null);
+    for (let i = 0; i < items.length; i++) {
+      try {
+        const res = await fetch(items[i].url);
+        preloadedBlobs[i] = await res.blob();
+      } catch (_) { /* non-fatal */ }
+    }
+  }
+
+  // ── Sharing helpers ───────────────────────────────────────────────
+  function makeTask(i) {
+    const isVideo = currentItems[i].type === "video";
+    const mime = isVideo ? "video/mp4" : "image/jpeg";
+    const ext  = isVideo ? "mp4" : "jpg";
+    return { file: new File([preloadedBlobs[i]], `instagram_${i + 1}.${ext}`, { type: mime }), index: i };
+  }
+
+  function shareTasks(tasks) {
+    if (!navigator.share || !navigator.canShare) {
+      showStatus("&#x26A0; Share API not available. Hold each photo to save individually.", "error");
+      return;
+    }
+    const files = tasks.map(t => t.file);
+    if (navigator.canShare({ files })) {
+      navigator.share({ files, title: "Save to Photos" })
+        .then(() => tasks.forEach(t => markSaved(t.index)))
+        .catch(e => { if (e.name !== "AbortError") shareSerial(tasks, 0); });
+    } else {
+      shareSerial(tasks, 0);
+    }
+  }
+
+  function shareSerial(tasks, pos) {
+    if (pos >= tasks.length) { showStatus("&#x2713; All done!", "success"); return; }
+    const { file, index } = tasks[pos];
+    if (!navigator.canShare({ files: [file] })) { shareSerial(tasks, pos + 1); return; }
+    showStatus(`Saving ${pos + 1} of ${tasks.length}… tap "Save" in the sheet.`, "info");
+    navigator.share({ files: [file] })
+      .then(() => { markSaved(index); shareSerial(tasks, pos + 1); })
+      .catch(e => { if (e.name === "AbortError") hideStatus(); else shareSerial(tasks, pos + 1); });
+  }
+
+  // ── Save All ──────────────────────────────────────────────────────
+  function saveAll() {
+    const loaded = preloadedBlobs.filter(Boolean).length;
+    if (loaded < currentItems.length) {
+      showStatus(`<span class="spinner"></span> Still loading (${loaded}/${currentItems.length})… try again in a moment.`, "info");
+      return;
+    }
+    shareTasks(currentItems.map((_, i) => makeTask(i)));
+  }
+
+  const urlInput = document.getElementById("url-input");
+  const clearBtn = document.getElementById("clear-btn");
+
+  urlInput.addEventListener("keydown", e => {
+    if (e.key === "Enter") fetchMedia();
+  });
+
+  urlInput.addEventListener("input", updateClearBtn);
+
+  function updateClearBtn() {
+    clearBtn.style.display = urlInput.value.length > 0 ? "" : "none";
+  }
+
+  function clearInput() {
+    urlInput.value = "";
+    updateClearBtn();
+    hideStatus();
+    selectedIndices.clear();
+    updateSaveSelectedBtn();
+  }
+
+  async function pasteFromClipboard() {
+    if (!navigator.clipboard?.readText) {
+      urlInput.focus();
+      return;
+    }
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text.includes('instagram.com')) {
+        urlInput.value = text.trim();
+        updateClearBtn();
+        showStatus('&#x2713; Instagram link pasted.', 'success');
+        setTimeout(hideStatus, 2000);
+      } else {
+        showStatus('No Instagram link found in clipboard.', 'error');
+        setTimeout(hideStatus, 2000);
+      }
+    } catch (_) {
+      showStatus('Tap and hold the URL field, then tap Paste.', 'info');
+      setTimeout(hideStatus, 3000);
+    }
+  }
+
+  // Native paste event — fires when user long-presses → Paste or Cmd+V.
+  // Uses event.clipboardData so iOS never shows the "Allow paste?" prompt.
+  urlInput.addEventListener("paste", e => {
+    const text = (e.clipboardData || window.clipboardData).getData("text");
+    if (text.includes("instagram.com")) {
+      e.preventDefault();
+      urlInput.value = text.trim();
+      updateClearBtn();
+      showStatus("&#x2713; Instagram link pasted.", "success");
+      setTimeout(hideStatus, 2000);
+    }
+  });
+
+  // Silent background check when switching back from Instagram (works after first permission grant)
+  async function tryPasteFromClipboard() {
+    if (!navigator.clipboard?.readText) return;
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text.includes("instagram.com") && !urlInput.value.trim()) {
+        urlInput.value = text.trim();
+        updateClearBtn();
+        showStatus("&#x2713; Instagram link detected.", "success");
+        setTimeout(hideStatus, 2000);
+      }
+    } catch (_) { /* no permission yet — silently ignore */ }
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") tryPasteFromClipboard();
+  });
+</script>
+</body>
+</html>

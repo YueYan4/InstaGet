@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: instaGet
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 300
+    envVars:
+      - key: INSTAGRAM_SESSION_ID
+        sync: false
+      - key: INSTAGRAM_CSRF_TOKEN
+        sync: false
