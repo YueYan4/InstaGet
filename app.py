@@ -515,6 +515,83 @@ def get_profile_post_codes(username, session, limit):
     return codes[:target], profile_total, diag
 
 
+_SC_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+
+def shortcode_to_mediaid(shortcode):
+    n = 0
+    for c in shortcode:
+        n = n * 64 + _SC_ALPHABET.index(c)
+    return n
+
+
+def _save_url(session, url, path):
+    r = session.get(url, stream=True, timeout=60,
+                    headers={"Accept": "*/*", "Referer": "https://www.instagram.com/"})
+    r.raise_for_status()
+    with open(path, "wb") as f:
+        for chunk in r.iter_content(65536):
+            f.write(chunk)
+
+
+def _save_media_node(node, session, dest, prefix, idx):
+    mt = node.get("media_type", 1)
+    if mt == 2:  # video
+        versions = node.get("video_versions", [])
+        url = versions[0]["url"] if versions else None
+        ext = "mp4"
+    else:  # image
+        candidates = node.get("image_versions2", {}).get("candidates", [])
+        url = candidates[0]["url"] if candidates else None
+        ext = "jpg"
+    if url:
+        _save_url(session, url, dest / f"{prefix}_{idx:02d}.{ext}")
+
+
+def download_post_direct(shortcode, session, dest_dir):
+    """Download via api/v1/media/{id}/info/ — no graphql/query needed."""
+    media_id = shortcode_to_mediaid(shortcode)
+    r = None
+    for attempt in range(3):
+        r = session.get(
+            f"https://www.instagram.com/api/v1/media/{media_id}/info/",
+            timeout=20,
+        )
+        if r.status_code == 429 and attempt < 2:
+            time.sleep(random.uniform(8, 15))
+            continue
+        r.raise_for_status()
+        break
+    items = r.json().get("items", [])
+    if not items:
+        raise Exception(f"No media returned for {shortcode}")
+    item = items[0]
+    if item.get("media_type") == 8:  # carousel
+        for i, child in enumerate(item.get("carousel_media", [])):
+            _save_media_node(child, session, dest_dir, shortcode, i)
+    else:
+        _save_media_node(item, session, dest_dir, shortcode, 0)
+
+
+def _load_session_rows():
+    sessionid = os.environ.get("INSTAGRAM_SESSION_ID", "").strip()
+    csrftoken  = os.environ.get("INSTAGRAM_CSRF_TOKEN",  "").strip()
+    if not sessionid and SESSION_FILE.exists():
+        try:
+            cfg = json.loads(SESSION_FILE.read_text())
+            sessionid = cfg.get("sessionid", "").strip()
+            csrftoken  = cfg.get("csrftoken",  "").strip()
+        except Exception:
+            pass
+    if not sessionid:
+        raise Exception(
+            "Instagram session not configured. Open ⚙ Setup and paste your sessionid."
+        )
+    rows = [("sessionid", sessionid, ".instagram.com", "/")]
+    if csrftoken:
+        rows.append(("csrftoken", csrftoken, ".instagram.com", "/"))
+    return rows
+
+
 def parse_url(url):
     """Returns ('post', shortcode), ('profile', username), or (None, None)."""
     url = url.strip().rstrip("/")
@@ -552,35 +629,25 @@ def fetch_media():
     session_dir.mkdir()
 
     try:
-        L = make_loader()
-        rows = load_session_cookies(L)
+        rows = _load_session_rows()
+        session = _make_profile_session(rows)
 
         profile_total = None
+        profile_diag = {}
         if url_type == "post":
-            post = instaloader.Post.from_shortcode(L.context, identifier)
-            L.download_post(post, target=session_dir)
+            codes = [identifier]
         else:
-            profile_session = _make_profile_session(rows)
-            codes, profile_total, profile_diag = get_profile_post_codes(identifier, profile_session, limit)
+            codes, profile_total, profile_diag = get_profile_post_codes(identifier, session, limit)
             if not codes:
                 raise Exception(f"No posts found for @{identifier}.")
-            for code in codes:
-                for attempt in range(3):
-                    try:
-                        post = instaloader.Post.from_shortcode(L.context, code)
-                        L.download_post(post, target=session_dir)
-                        break
-                    except (instaloader.exceptions.BadResponseException,
-                            instaloader.exceptions.ConnectionException) as e:
-                        if attempt < 2:
-                            wait = (attempt + 1) * random.uniform(5, 10)
-                            print(f"[retry] {code} attempt {attempt+1} error={e} sleeping {wait:.1f}s", flush=True)
-                            time.sleep(wait)
-                        else:
-                            print(f"Skipping post {code} after 3 attempts: {e}", flush=True)
-                    except Exception as e:
-                        print(f"Skipping post {code}: {e}", flush=True)
-                        break
+
+        for code in codes:
+            try:
+                print(f"[download] {code}", flush=True)
+                download_post_direct(code, session, session_dir)
+                time.sleep(random.uniform(1, 3))
+            except Exception as e:
+                print(f"Skipping {code}: {e}", flush=True)
 
         media_files = sorted([
             f for f in session_dir.rglob("*")
@@ -615,15 +682,6 @@ def fetch_media():
             }
         return jsonify(resp)
 
-    except instaloader.exceptions.LoginRequiredException:
-        shutil.rmtree(session_dir, ignore_errors=True)
-        return jsonify({"error": "Login required. Tap ⚙ Setup and re-enter your Instagram sessionid."}), 401
-    except instaloader.exceptions.PrivateProfileNotFollowedException:
-        shutil.rmtree(session_dir, ignore_errors=True)
-        return jsonify({"error": "This account is private and you don't follow it."}), 403
-    except instaloader.exceptions.BadResponseException as e:
-        shutil.rmtree(session_dir, ignore_errors=True)
-        return jsonify({"error": f"Instagram blocked the request. Wait a few minutes and try again. ({e})"}), 429
     except Exception as e:
         shutil.rmtree(session_dir, ignore_errors=True)
         return jsonify({"error": str(e)}), 500
