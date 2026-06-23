@@ -528,9 +528,21 @@ def shortcode_to_mediaid(shortcode):
 
 
 def _save_url(session, url, path):
-    # CDN URLs are pre-signed — sending the Instagram session cookies causes redirect loops
-    r = req_lib.get(url, stream=True, timeout=60, headers={"Accept": "*/*"})
-    r.raise_for_status()
+    print(f"[_save_url] {url[:120]}", flush=True)
+    try:
+        r = req_lib.get(
+            url, stream=True, timeout=60,
+            headers={
+                "Accept": "image/webp,*/*",
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) "
+                    "Gecko/20100101 Firefox/124.0"
+                ),
+            },
+        )
+        r.raise_for_status()
+    except Exception as e:
+        raise Exception(f"CDN fetch failed ({url[:80]}): {e}")
     with open(path, "wb") as f:
         for chunk in r.iter_content(65536):
             f.write(chunk)
@@ -578,16 +590,23 @@ def _extract_post_media(obj, seen=None):
 
 def download_post_via_html(shortcode, session, dest_dir):
     """Scrape post page HTML for media URLs — avoids all rate-limited API endpoints."""
-    r = session.get(
-        f"https://www.instagram.com/p/{shortcode}/",
-        headers={
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-        },
-        timeout=30,
-    )
+    try:
+        r = session.get(
+            f"https://www.instagram.com/p/{shortcode}/",
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+                # Remove AJAX/API headers that don't belong on a page navigation
+                "X-Requested-With": None,
+                "X-IG-App-ID": None,
+                "Origin": None,
+            },
+            timeout=30,
+        )
+    except Exception as e:
+        raise Exception(f"post page fetch: {e}")
     if not r.ok:
         raise Exception(f"post page HTTP {r.status_code}")
     seen = set()
