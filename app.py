@@ -41,9 +41,8 @@ def make_loader():
         post_metadata_txt_pattern=None,
         filename_pattern="{date_utc:%Y%m%d_%H%M%S}",
         sleep=True,
+        iphone_support=True,  # uses i.instagram.com instead of old graphql/query
     )
-    # Match the Firefox session: browser UA + web-app headers.
-    # Using mobile UA with web cookies triggers Instagram's bot detection.
     L.context._session.headers.update({
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) "
@@ -84,6 +83,12 @@ def load_session_cookies(L):
     if csrftoken:
         L.context._session.cookies.set("csrftoken", csrftoken, domain=".instagram.com", path="/")
         L.context._session.headers["X-CSRFToken"] = csrftoken
+
+    # Also load into the iPhone session so iphone_support=True endpoints work
+    if hasattr(L.context, "_iphone_session"):
+        L.context._iphone_session.cookies.set("sessionid", sessionid, domain=".instagram.com", path="/")
+        if csrftoken:
+            L.context._iphone_session.cookies.set("csrftoken", csrftoken, domain=".instagram.com", path="/")
 
     rows = [("sessionid", sessionid, ".instagram.com", "/")]
     if csrftoken:
@@ -681,16 +686,16 @@ def fetch_media():
     session_dir.mkdir()
 
     try:
-        rows = _load_session_rows()
+        L = make_loader()
+        rows = load_session_cookies(L)
         session = _make_profile_session(rows)
 
         profile_total = None
         profile_diag = {}
-        items_by_code = {}
         if url_type == "post":
             codes = [identifier]
         else:
-            codes, items_by_code, profile_total, profile_diag = get_profile_post_codes(
+            codes, _items, profile_total, profile_diag = get_profile_post_codes(
                 identifier, session, limit
             )
             if not codes:
@@ -698,24 +703,18 @@ def fetch_media():
 
         download_errors = []
         for code in codes:
-            try:
-                print(f"[download] {code}", flush=True)
-                if code in items_by_code:
-                    # Use media URLs already in the feed/user response — zero extra API calls
-                    item = items_by_code[code]
-                    if item.get("media_type") == 8:
-                        for i, child in enumerate(item.get("carousel_media", [])):
-                            _save_media_node(child, session, session_dir, code, i)
+            for attempt in range(3):
+                try:
+                    print(f"[download] {code} attempt={attempt+1}", flush=True)
+                    post = instaloader.Post.from_shortcode(L.context, code)
+                    L.download_post(post, target=session_dir)
+                    break
+                except Exception as e:
+                    print(f"[download] {code} attempt={attempt+1} error: {e}", flush=True)
+                    if attempt < 2:
+                        time.sleep(random.uniform(5, 10))
                     else:
-                        _save_media_node(item, session, session_dir, code, 0)
-                else:
-                    # Single post URL or code not in feed data: scrape post page
-                    download_post_via_html(code, session, session_dir)
-                time.sleep(random.uniform(1, 3))
-            except Exception as e:
-                msg = f"{code}: {e}"
-                print(f"Skipping {msg}", flush=True)
-                download_errors.append(msg)
+                        download_errors.append(f"{code}: {e}")
 
         media_files = sorted([
             f for f in session_dir.rglob("*")
