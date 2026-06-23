@@ -559,11 +559,13 @@ def download_post_direct(shortcode, session, dest_dir):
         if r.status_code == 429 and attempt < 2:
             time.sleep(random.uniform(8, 15))
             continue
-        r.raise_for_status()
         break
-    items = r.json().get("items", [])
+    if not r.ok:
+        raise Exception(f"media/info HTTP {r.status_code}: {r.text[:300]}")
+    data = r.json()
+    items = data.get("items", [])
     if not items:
-        raise Exception(f"No media returned for {shortcode}")
+        raise Exception(f"media/info empty items (keys={list(data.keys())}): {str(data)[:300]}")
     item = items[0]
     if item.get("media_type") == 8:  # carousel
         for i, child in enumerate(item.get("carousel_media", [])):
@@ -641,13 +643,16 @@ def fetch_media():
             if not codes:
                 raise Exception(f"No posts found for @{identifier}.")
 
+        download_errors = []
         for code in codes:
             try:
                 print(f"[download] {code}", flush=True)
                 download_post_direct(code, session, session_dir)
                 time.sleep(random.uniform(1, 3))
             except Exception as e:
-                print(f"Skipping {code}: {e}", flush=True)
+                msg = f"{code}: {e}"
+                print(f"Skipping {msg}", flush=True)
+                download_errors.append(msg)
 
         media_files = sorted([
             f for f in session_dir.rglob("*")
@@ -656,7 +661,8 @@ def fetch_media():
 
         if not media_files:
             shutil.rmtree(session_dir, ignore_errors=True)
-            return jsonify({"error": "No media found. The post may be private or the URL is invalid."}), 404
+            detail = "; ".join(download_errors[:2]) if download_errors else "no details"
+            return jsonify({"error": f"No media saved. {detail}"}), 404
 
         items = [
             {
