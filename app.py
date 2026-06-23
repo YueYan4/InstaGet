@@ -197,6 +197,7 @@ def _codes_and_cursor_from_html(html, existing=None):
 def get_profile_post_codes(username, session, limit):
     target = int(limit) if limit else 12
     codes = []
+    items_by_code = {}
     diag = {}
     html = ""
     lsd = None
@@ -340,6 +341,7 @@ def get_profile_post_codes(username, session, limit):
                             c = item.get("code") or item.get("shortcode")
                             if c and c not in codes:
                                 new_codes.append(c)
+                                items_by_code[c] = item
                         pg = {}
                         cursor = data.get("next_max_id") if data.get("more_available") else None
                     else:
@@ -392,6 +394,7 @@ def get_profile_post_codes(username, session, limit):
                     code = item.get("code") or item.get("shortcode")
                     if code and code not in codes:
                         codes.append(code)
+                        items_by_code[code] = item
                         new_items += 1
                 diag[f"feed_p{feed_page}"] = new_items
                 print(f"[profile] feed page={feed_page} new={new_items} total={len(codes)}", flush=True)
@@ -512,7 +515,7 @@ def get_profile_post_codes(username, session, limit):
             f"Could not load posts for @{username}. Debug: {json.dumps(diag)}"
         )
 
-    return codes[:target], profile_total, diag
+    return codes[:target], items_by_code, profile_total, diag
 
 
 _SC_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
@@ -547,31 +550,59 @@ def _save_media_node(node, session, dest, prefix, idx):
         _save_url(session, url, dest / f"{prefix}_{idx:02d}.{ext}")
 
 
-def download_post_direct(shortcode, session, dest_dir):
-    """Download via api/v1/media/{id}/info/ — no graphql/query needed."""
-    media_id = shortcode_to_mediaid(shortcode)
-    r = None
-    for attempt in range(3):
-        r = session.get(
-            f"https://www.instagram.com/api/v1/media/{media_id}/info/",
-            timeout=20,
-        )
-        if r.status_code == 429 and attempt < 2:
-            time.sleep(random.uniform(8, 15))
-            continue
-        break
+def _extract_post_media(obj, seen=None):
+    """Walk JSON blobs from a post page; collect (ext, url) for each media item."""
+    if seen is None:
+        seen = set()
+    result = []
+    if isinstance(obj, dict):
+        vurl = obj.get("video_url")
+        durl = obj.get("display_url")
+        if isinstance(vurl, str) and vurl.startswith("https://") and vurl not in seen:
+            seen.add(vurl)
+            result.append(("mp4", vurl))
+            if isinstance(durl, str):
+                seen.add(durl)  # suppress thumbnail from this same node
+        elif isinstance(durl, str) and durl.startswith("https://") and durl not in seen:
+            seen.add(durl)
+            result.append(("jpg", durl))
+        for v in obj.values():
+            if isinstance(v, (dict, list)):
+                result.extend(_extract_post_media(v, seen))
+    elif isinstance(obj, list):
+        for item in obj:
+            if isinstance(item, (dict, list)):
+                result.extend(_extract_post_media(item, seen))
+    return result
+
+
+def download_post_via_html(shortcode, session, dest_dir):
+    """Scrape post page HTML for media URLs — avoids all rate-limited API endpoints."""
+    r = session.get(
+        f"https://www.instagram.com/p/{shortcode}/",
+        headers={
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+        },
+        timeout=30,
+    )
     if not r.ok:
-        raise Exception(f"media/info HTTP {r.status_code}: {r.text[:300]}")
-    data = r.json()
-    items = data.get("items", [])
-    if not items:
-        raise Exception(f"media/info empty items (keys={list(data.keys())}): {str(data)[:300]}")
-    item = items[0]
-    if item.get("media_type") == 8:  # carousel
-        for i, child in enumerate(item.get("carousel_media", [])):
-            _save_media_node(child, session, dest_dir, shortcode, i)
-    else:
-        _save_media_node(item, session, dest_dir, shortcode, 0)
+        raise Exception(f"post page HTTP {r.status_code}")
+    seen = set()
+    urls = []
+    for blob in re.findall(
+        r'<script[^>]*type="application/json"[^>]*>(.*?)</script>', r.text, re.DOTALL
+    ):
+        try:
+            urls.extend(_extract_post_media(json.loads(blob), seen))
+        except Exception:
+            pass
+    if not urls:
+        raise Exception(f"no media URLs found in post page HTML for {shortcode}")
+    for i, (ext, url) in enumerate(urls):
+        _save_url(session, url, dest_dir / f"{shortcode}_{i:02d}.{ext}")
 
 
 def _load_session_rows():
@@ -636,10 +667,13 @@ def fetch_media():
 
         profile_total = None
         profile_diag = {}
+        items_by_code = {}
         if url_type == "post":
             codes = [identifier]
         else:
-            codes, profile_total, profile_diag = get_profile_post_codes(identifier, session, limit)
+            codes, items_by_code, profile_total, profile_diag = get_profile_post_codes(
+                identifier, session, limit
+            )
             if not codes:
                 raise Exception(f"No posts found for @{identifier}.")
 
@@ -647,7 +681,17 @@ def fetch_media():
         for code in codes:
             try:
                 print(f"[download] {code}", flush=True)
-                download_post_direct(code, session, session_dir)
+                if code in items_by_code:
+                    # Use media URLs already in the feed/user response — zero extra API calls
+                    item = items_by_code[code]
+                    if item.get("media_type") == 8:
+                        for i, child in enumerate(item.get("carousel_media", [])):
+                            _save_media_node(child, session, session_dir, code, i)
+                    else:
+                        _save_media_node(item, session, session_dir, code, 0)
+                else:
+                    # Single post URL or code not in feed data: scrape post page
+                    download_post_via_html(code, session, session_dir)
                 time.sleep(random.uniform(1, 3))
             except Exception as e:
                 msg = f"{code}: {e}"
