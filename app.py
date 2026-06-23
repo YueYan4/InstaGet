@@ -565,11 +565,22 @@ def fetch_media():
             if not codes:
                 raise Exception(f"No posts found for @{identifier}.")
             for code in codes:
-                try:
-                    post = instaloader.Post.from_shortcode(L.context, code)
-                    L.download_post(post, target=session_dir)
-                except Exception as e:
-                    print(f"Skipping post {code}: {e}", flush=True)
+                for attempt in range(3):
+                    try:
+                        post = instaloader.Post.from_shortcode(L.context, code)
+                        L.download_post(post, target=session_dir)
+                        break
+                    except (instaloader.exceptions.BadResponseException,
+                            instaloader.exceptions.ConnectionException) as e:
+                        if attempt < 2:
+                            wait = (attempt + 1) * random.uniform(5, 10)
+                            print(f"[retry] {code} attempt {attempt+1} error={e} sleeping {wait:.1f}s", flush=True)
+                            time.sleep(wait)
+                        else:
+                            print(f"Skipping post {code} after 3 attempts: {e}", flush=True)
+                    except Exception as e:
+                        print(f"Skipping post {code}: {e}", flush=True)
+                        break
 
         media_files = sorted([
             f for f in session_dir.rglob("*")
