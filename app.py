@@ -528,8 +528,8 @@ def shortcode_to_mediaid(shortcode):
 
 
 def _save_url(session, url, path):
-    r = session.get(url, stream=True, timeout=60,
-                    headers={"Accept": "*/*", "Referer": "https://www.instagram.com/"})
+    # CDN URLs are pre-signed — sending the Instagram session cookies causes redirect loops
+    r = req_lib.get(url, stream=True, timeout=60, headers={"Accept": "*/*"})
     r.raise_for_status()
     with open(path, "wb") as f:
         for chunk in r.iter_content(65536):
