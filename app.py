@@ -737,23 +737,24 @@ def _fetch_og_meta(shortcode):
         except Exception:
             pass
 
-    # CDN URL scan — ONLY within a window around the shortcode's position,
-    # and only as a fallback when structured JSON found nothing.
-    # Un-escape JSON-encoded slashes/ampersands first so https:\/\/ matches.
+    # CDN URL scan — scan all shortcode positions in the un-escaped HTML.
+    # Position 1590 is a meta/canonical tag in <head>; the actual data JSON
+    # is much further in the 900KB document. Try each occurrence's window.
     if not bot_items:
-        sc_pos = html.find(shortcode)
-        print(f"[og_meta] shortcode_pos={sc_pos} html_len={len(html)}", flush=True)
-        if sc_pos >= 0:
-            window = html[max(0, sc_pos - 2000):sc_pos + 20000]
-            window = window.replace('\\/', '/').replace('\\u0026', '&').replace('&amp;', '&')
+        uhtml = html.replace('\\/', '/').replace('\\u0026', '&').replace('&amp;', '&')
+        positions = [m.start() for m in re.finditer(re.escape(shortcode), uhtml)]
+        print(f"[og_meta] shortcode at {len(positions)} pos(s): {positions[:6]}", flush=True)
+        for sc_pos in positions:
+            window = uhtml[max(0, sc_pos - 1000):sc_pos + 25000]
             for raw in _cdn_pat.findall(window):
-                u = raw
-                if _thumb_pat.search(u):
+                if _thumb_pat.search(raw):
                     continue
-                if u not in seen_urls:
-                    seen_urls.add(u)
-                    ext = 'mp4' if '.mp4' in u else 'jpg'
-                    bot_items.append((ext, u))
+                if raw not in seen_urls:
+                    seen_urls.add(raw)
+                    ext = 'mp4' if '.mp4' in raw else 'jpg'
+                    bot_items.append((ext, raw))
+            if bot_items:
+                break
 
     if bot_items:
         print(f"[og_meta] extracted {len(bot_items)} media url(s) from page HTML", flush=True)
