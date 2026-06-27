@@ -698,7 +698,50 @@ def _fetch_og_meta(shortcode):
             og_image = m.group(1).replace('&amp;', '&')
             break
 
-    return username, og_image
+    # Try to extract full-res CDN URLs from the ~900KB bot-UA page HTML.
+    # Instagram embeds JSON blobs with display_url/video_url in the page.
+    bot_items = []
+    seen_urls = set()
+
+    def _unesc(s):
+        return s.replace('\\u0026', '&').replace('\\/', '/').replace('&amp;', '&')
+
+    for blob in re.findall(
+        r'<script[^>]*type=["\']application/(?:json|ld\+json)["\'][^>]*>(.*?)</script>',
+        html, re.DOTALL | re.IGNORECASE,
+    ):
+        try:
+            bot_items.extend(_extract_post_media(json.loads(blob), seen_urls))
+        except Exception:
+            pass
+
+    for raw_m in re.finditer(
+        r'window\.__additionalDataLoaded\s*\([^,]+,\s*(\{.*?\})\s*\)',
+        html, re.DOTALL,
+    ):
+        try:
+            bot_items.extend(_extract_post_media(json.loads(raw_m.group(1)), seen_urls))
+        except Exception:
+            pass
+
+    for raw in re.findall(
+        r'https://(?:scontent|cdninstagram|instagram)[^\s"\'<>\\]+\.(?:jpg|jpeg|webp|mp4)(?:[?\\][^\s"\'<>]*)?',
+        html,
+    ):
+        u = _unesc(raw.split('\\')[0])
+        if re.search(r'/s\d+x\d+/', u):
+            continue
+        if u not in seen_urls:
+            seen_urls.add(u)
+            ext = 'mp4' if '.mp4' in u else 'jpg'
+            bot_items.append((ext, u))
+
+    if bot_items:
+        print(f"[og_meta] extracted {len(bot_items)} media url(s) from page HTML", flush=True)
+    else:
+        print(f"[og_meta] no media urls found in page HTML", flush=True)
+
+    return username, og_image, bot_items
 
 
 def _get_single_post_item(shortcode, session, hint_username=None):
@@ -713,12 +756,32 @@ def _get_single_post_item(shortcode, session, hint_username=None):
     """
     username = hint_username
     og_image_url = None
+    bot_items = []
 
     if not username:
         try:
-            username, og_image_url = _fetch_og_meta(shortcode)
+            username, og_image_url, bot_items = _fetch_og_meta(shortcode)
         except Exception as e:
             print(f"[og_meta] exception: {e}", flush=True)
+
+    # If the bot-UA HTML contained full-res CDN URLs, build a synthetic item
+    # and return immediately — no need for user_id / feed search.
+    if bot_items:
+        print(f"[single_post] using {len(bot_items)} url(s) from page HTML (no feed search needed)", flush=True)
+        if len(bot_items) == 1:
+            ext, url = bot_items[0]
+            if ext == 'mp4':
+                return {"media_type": 2, "video_versions": [{"url": url}], "code": shortcode}
+            else:
+                return {"media_type": 1, "image_versions2": {"candidates": [{"url": url}]}, "code": shortcode}
+        # Carousel
+        carousel = []
+        for ext, url in bot_items:
+            if ext == 'mp4':
+                carousel.append({"media_type": 2, "video_versions": [{"url": url}]})
+            else:
+                carousel.append({"media_type": 1, "image_versions2": {"candidates": [{"url": url}]}})
+        return {"media_type": 8, "carousel_media": carousel, "code": shortcode}
 
     # Full-resolution path via feed/user
     if username:
