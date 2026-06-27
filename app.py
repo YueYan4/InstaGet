@@ -41,7 +41,6 @@ def make_loader():
         post_metadata_txt_pattern=None,
         filename_pattern="{date_utc:%Y%m%d_%H%M%S}",
         sleep=True,
-        iphone_support=True,  # uses i.instagram.com instead of old graphql/query
     )
     L.context._session.headers.update({
         "User-Agent": (
@@ -83,12 +82,6 @@ def load_session_cookies(L):
     if csrftoken:
         L.context._session.cookies.set("csrftoken", csrftoken, domain=".instagram.com", path="/")
         L.context._session.headers["X-CSRFToken"] = csrftoken
-
-    # Also load into the iPhone session so iphone_support=True endpoints work
-    if hasattr(L.context, "_iphone_session"):
-        L.context._iphone_session.cookies.set("sessionid", sessionid, domain=".instagram.com", path="/")
-        if csrftoken:
-            L.context._iphone_session.cookies.set("csrftoken", csrftoken, domain=".instagram.com", path="/")
 
     rows = [("sessionid", sessionid, ".instagram.com", "/")]
     if csrftoken:
