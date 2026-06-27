@@ -608,29 +608,39 @@ _PLAIN_HEADERS = {
 }
 
 
-def _get_single_post_item(shortcode, session):
+def _get_single_post_item(shortcode, session, hint_username=None):
     """
-    Resolve a single post shortcode to a feed item dict via:
-      1. Public oembed API  → username
-      2. Profile page HTML  → user_id
-      3. feed/user/{id}/    → item with CDN media URLs
-    This avoids every endpoint that Render IPs can't reach.
+    Resolve a single post shortcode to a feed item dict.
+    Uses hint_username (extracted from URL) if available, otherwise tries oembed.
+    Then: profile page → user_id → feed/user search.
     """
-    # Step 1: username via public oembed
-    oe = req_lib.get(
-        "https://api.instagram.com/oembed/",
-        params={"url": f"https://www.instagram.com/p/{shortcode}/", "format": "json"},
-        headers=_PLAIN_HEADERS,
-        timeout=15,
-    )
-    if not oe.ok:
-        raise Exception(f"oembed HTTP {oe.status_code}")
-    author_url = oe.json().get("author_url", "")
-    username = author_url.rstrip("/").rsplit("/", 1)[-1]
-    if not username:
-        raise Exception("oembed returned no author_url")
+    username = hint_username
 
-    # Step 2: user_id from profile page (same path that already works)
+    # Try oembed for username if not already known
+    if not username:
+        try:
+            oe = req_lib.get(
+                "https://api.instagram.com/oembed/",
+                params={"url": f"https://www.instagram.com/p/{shortcode}/"},
+                headers=_PLAIN_HEADERS,
+                timeout=15,
+            )
+            if oe.ok and oe.text.strip().startswith("{"):
+                author_url = oe.json().get("author_url", "")
+                candidate = author_url.rstrip("/").rsplit("/", 1)[-1]
+                if candidate:
+                    username = candidate
+        except Exception:
+            pass
+
+    if not username:
+        raise Exception(
+            "Could not identify the post’s author from this server. "
+            "Tip: paste the profile URL (instagram.com/username/) instead — "
+            "profile downloads work reliably."
+        )
+
+    # Get user_id from profile page
     pr = session.get(
         f"https://www.instagram.com/{username}/",
         headers={
@@ -653,9 +663,12 @@ def _get_single_post_item(shortcode, session):
             user_id = m.group(1)
             break
     if not user_id:
-        raise Exception(f"could not find user_id for @{username}")
+        raise Exception(
+            f"Could not find user_id for @{username}. "
+            "Try the profile URL (instagram.com/{username}/) instead."
+        )
 
-    # Step 3: search feed/user for this shortcode (up to 120 recent posts)
+    # Search feed/user for this shortcode (up to 120 recent posts)
     cursor = None
     for _ in range(10):
         params = {"count": 12}
@@ -677,7 +690,8 @@ def _get_single_post_item(shortcode, session):
         time.sleep(random.uniform(2, 4))
 
     raise Exception(
-        f"post not found in @{username}'s recent feed (checked up to 120 posts)"
+        f"Post not found in @{username}’s recent feed (searched ~120 posts). "
+        "The post may be older — try the profile URL instead."
     )
 
 
@@ -829,6 +843,15 @@ def fetch_media():
     if not url_type:
         return jsonify({"error": "Could not parse that Instagram URL."}), 400
 
+    # Extract username from URL if it uses /{username}/p/{shortcode}/ format
+    url_hint_username = None
+    if url_type == "post":
+        um = re.search(r'instagram\.com/([A-Za-z0-9_.]+)/(?:p|reel|reels|tv)/', url)
+        if um and um.group(1) not in {
+            "p", "reel", "reels", "tv", "stories", "explore", "accounts", "direct"
+        }:
+            url_hint_username = um.group(1)
+
     session_id = str(uuid.uuid4())
     session_dir = DOWNLOAD_DIR / session_id
     session_dir.mkdir()
@@ -856,8 +879,8 @@ def fetch_media():
                 print(f"[download] {code}", flush=True)
                 item = items_by_code.get(code)
                 if item is None:
-                    # Single post URL: resolve via oembed → profile page → feed/user
-                    item = _get_single_post_item(code, session)
+                    # Single post URL: resolve via hint/oembed → profile page → feed/user
+                    item = _get_single_post_item(code, session, url_hint_username)
                 if item.get("media_type") == 8:
                     for i, child in enumerate(item.get("carousel_media", [])):
                         _save_media_node(child, browser, session_dir, code, i)
