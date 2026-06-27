@@ -698,6 +698,7 @@ def _get_single_post_item(shortcode, session, hint_username=None):
     # Full-resolution path via feed/user
     if username:
         try:
+            print(f"[single_post] fetching profile for @{username}", flush=True)
             pr = session.get(
                 f"https://www.instagram.com/{username}/",
                 headers={
@@ -719,11 +720,15 @@ def _get_single_post_item(shortcode, session, hint_username=None):
                 if m:
                     user_id = m.group(1)
                     break
+            print(f"[single_post] user_id={user_id} profile_status={pr.status_code}", flush=True)
+
+            target_media_id = str(shortcode_to_mediaid(shortcode))
 
             if user_id:
                 cursor = None
-                for _ in range(10):
-                    params = {"count": 12}
+                pages = 0
+                for _ in range(20):
+                    params = {"count": 20}
                     if cursor:
                         params["max_id"] = cursor
                     r = session.get(
@@ -733,13 +738,21 @@ def _get_single_post_item(shortcode, session, hint_username=None):
                     )
                     r.raise_for_status()
                     data = r.json()
-                    for item in data.get("items", []):
-                        if item.get("code") == shortcode or item.get("shortcode") == shortcode:
+                    items = data.get("items", [])
+                    pages += 1
+                    sample = [f'{it.get("code","?")}|pk={it.get("pk","?")}' for it in items[:3]]
+                    print(f"[single_post] page {pages}: {len(items)} items, sample={sample}", flush=True)
+                    for item in items:
+                        item_code = item.get("code") or item.get("shortcode") or ""
+                        item_pk   = str(item.get("pk") or item.get("id") or "")
+                        if item_code == shortcode or item_pk == target_media_id:
+                            print(f"[single_post] found on page {pages}", flush=True)
                             return item
                     if not data.get("more_available") or not data.get("next_max_id"):
                         break
                     cursor = data["next_max_id"]
-                    time.sleep(random.uniform(2, 4))
+                    time.sleep(random.uniform(1, 2))
+                print(f"[single_post] not found after {pages} pages", flush=True)
         except Exception as e:
             print(f"[single_post] feed path error: {e}", flush=True)
 
