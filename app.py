@@ -610,7 +610,7 @@ _PLAIN_HEADERS = {
 
 def _fetch_og_meta(shortcode):
     """
-    Fetch the post page as Facebook’s link-preview crawler.
+    Fetch the post page as Facebook's link-preview crawler.
     Instagram serves OG metadata to this UA, giving us og:title (which contains
     the username) and og:image (thumbnail) without cookies or redirects.
     Returns (username_or_None, og_image_url_or_None).
@@ -636,18 +636,18 @@ def _fetch_og_meta(shortcode):
     print(f"[og_meta] status={r.status_code} len={len(html)}", flush=True)
 
     username = None
-    # og:title is "@username on Instagram: …" or "username on Instagram: …"
+    # og:title is "@username on Instagram: ..." or "username on Instagram: ..."
     for pat in [
-        r’<meta\s+property="og:title"\s+content="([^"]*)"’,
-        r’<meta\s+content="([^"]*)"\s+property="og:title"’,
+        r'<meta\s+property="og:title"\s+content="([^"]*)"',
+        r'<meta\s+content="([^"]*)"\s+property="og:title"',
     ]:
         m = re.search(pat, html)
         if m:
             title = (m.group(1)
-                     .replace(‘&amp;’, ‘&’)
-                     .replace(‘&#039;’, "’")
-                     .replace(‘&quot;’, ‘"’))
-            um = re.match(r’@?([A-Za-z0-9_.]+)\s+on\s+Instagram’, title, re.IGNORECASE)
+                     .replace('&amp;', '&')
+                     .replace('&#039;', "'")
+                     .replace('&quot;', '"'))
+            um = re.match(r'@?([A-Za-z0-9_.]+)\s+on\s+Instagram', title, re.IGNORECASE)
             if um:
                 username = um.group(1)
                 print(f"[og_meta] username={username}", flush=True)
@@ -655,12 +655,12 @@ def _fetch_og_meta(shortcode):
 
     og_image = None
     for pat in [
-        r’<meta\s+property="og:image"\s+content="([^"]*)"’,
-        r’<meta\s+content="([^"]*)"\s+property="og:image"’,
+        r'<meta\s+property="og:image"\s+content="([^"]*)"',
+        r'<meta\s+content="([^"]*)"\s+property="og:image"',
     ]:
         m = re.search(pat, html)
         if m:
-            og_image = m.group(1).replace(‘&amp;’, ‘&’)
+            og_image = m.group(1).replace('&amp;', '&')
             break
 
     return username, og_image
@@ -699,10 +699,10 @@ def _get_single_post_item(shortcode, session, hint_username=None):
         )
         user_id = None
         for pat in [
-            r’"owner_id"\s*:\s*"(\d{6,15})"’,
-            r’"user_id"\s*:\s*"(\d{6,15})"’,
-            r’"ds_user_id"\s*:\s*"(\d{6,15})"’,
-            r’"pk"\s*:\s*"(\d{6,15})"’,
+            r'"owner_id"\s*:\s*"(\d{6,15})"',
+            r'"user_id"\s*:\s*"(\d{6,15})"',
+            r'"ds_user_id"\s*:\s*"(\d{6,15})"',
+            r'"pk"\s*:\s*"(\d{6,15})"',
         ]:
             m = re.search(pat, pr.text)
             if m:
