@@ -646,27 +646,52 @@ def _fetch_og_meta(shortcode):
     print(f"[og_meta] status={r.status_code} len={len(html)}", flush=True)
 
     username = None
-    # og:title is "@username on Instagram: ..." or "username on Instagram: ..."
-    for pat in [
-        r'<meta\s+property="og:title"\s+content="([^"]*)"',
-        r'<meta\s+content="([^"]*)"\s+property="og:title"',
-    ]:
-        m = re.search(pat, html)
+
+    # Method 1: article:author = "https://www.instagram.com/username/"
+    m = re.search(r'<meta\s[^>]*property="article:author"\s[^>]*content="([^"]*)"', html)
+    if not m:
+        m = re.search(r'<meta\s[^>]*content="([^"]*)"\s[^>]*property="article:author"', html)
+    if m:
+        author_url = m.group(1).replace('&amp;', '&')
+        candidate = author_url.rstrip('/').rsplit('/', 1)[-1]
+        if re.fullmatch(r'[A-Za-z0-9_.]+', candidate):
+            username = candidate
+            print(f"[og_meta] username from article:author={username}", flush=True)
+
+    # Method 2: og:title "@username on Instagram: ..."
+    if not username:
+        for pat in [
+            r'<meta\s[^>]*property="og:title"\s[^>]*content="([^"]*)"',
+            r'<meta\s[^>]*content="([^"]*)"\s[^>]*property="og:title"',
+        ]:
+            m = re.search(pat, html)
+            if m:
+                title = (m.group(1)
+                         .replace('&amp;', '&').replace('&#039;', "'")
+                         .replace('&quot;', '"').replace('&#64;', '@'))
+                print(f"[og_meta] title={title[:80]!r}", flush=True)
+                um = re.search(r'@?([A-Za-z0-9_.]+)\s+on\s+Instagram', title, re.IGNORECASE)
+                if um:
+                    username = um.group(1)
+                    print(f"[og_meta] username from og:title={username}", flush=True)
+                break
+
+    # Method 3: twitter:creator "@username"
+    if not username:
+        m = re.search(r'<meta\s[^>]*name="twitter:creator"\s[^>]*content="@?([A-Za-z0-9_.]+)"', html)
+        if not m:
+            m = re.search(r'<meta\s[^>]*content="@?([A-Za-z0-9_.]+)"\s[^>]*name="twitter:creator"', html)
         if m:
-            title = (m.group(1)
-                     .replace('&amp;', '&')
-                     .replace('&#039;', "'")
-                     .replace('&quot;', '"'))
-            um = re.match(r'@?([A-Za-z0-9_.]+)\s+on\s+Instagram', title, re.IGNORECASE)
-            if um:
-                username = um.group(1)
-                print(f"[og_meta] username={username}", flush=True)
-            break
+            username = m.group(1)
+            print(f"[og_meta] username from twitter:creator={username}", flush=True)
+
+    if not username:
+        print(f"[og_meta] could not extract username; html snippet={html[:300]!r}", flush=True)
 
     og_image = None
     for pat in [
-        r'<meta\s+property="og:image"\s+content="([^"]*)"',
-        r'<meta\s+content="([^"]*)"\s+property="og:image"',
+        r'<meta\s[^>]*property="og:image"\s[^>]*content="([^"]*)"',
+        r'<meta\s[^>]*content="([^"]*)"\s[^>]*property="og:image"',
     ]:
         m = re.search(pat, html)
         if m:
