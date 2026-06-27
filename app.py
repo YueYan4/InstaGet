@@ -738,13 +738,16 @@ def _fetch_og_meta(shortcode):
             pass
 
     # CDN URL scan — ONLY within a window around the shortcode's position,
-    # and only as a fallback when structured JSON found nothing
+    # and only as a fallback when structured JSON found nothing.
+    # Un-escape JSON-encoded slashes/ampersands first so https:\/\/ matches.
     if not bot_items:
         sc_pos = html.find(shortcode)
+        print(f"[og_meta] shortcode_pos={sc_pos} html_len={len(html)}", flush=True)
         if sc_pos >= 0:
-            window = html[max(0, sc_pos - 2000):sc_pos + 15000]
+            window = html[max(0, sc_pos - 2000):sc_pos + 20000]
+            window = window.replace('\\/', '/').replace('\\u0026', '&').replace('&amp;', '&')
             for raw in _cdn_pat.findall(window):
-                u = _unesc(raw.split('\\')[0])
+                u = raw
                 if _thumb_pat.search(u):
                     continue
                 if u not in seen_urls:
