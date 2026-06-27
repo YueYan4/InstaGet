@@ -608,6 +608,79 @@ _PLAIN_HEADERS = {
 }
 
 
+def _get_single_post_item(shortcode, session):
+    """
+    Resolve a single post shortcode to a feed item dict via:
+      1. Public oembed API  → username
+      2. Profile page HTML  → user_id
+      3. feed/user/{id}/    → item with CDN media URLs
+    This avoids every endpoint that Render IPs can't reach.
+    """
+    # Step 1: username via public oembed
+    oe = req_lib.get(
+        "https://api.instagram.com/oembed/",
+        params={"url": f"https://www.instagram.com/p/{shortcode}/", "format": "json"},
+        headers=_PLAIN_HEADERS,
+        timeout=15,
+    )
+    if not oe.ok:
+        raise Exception(f"oembed HTTP {oe.status_code}")
+    author_url = oe.json().get("author_url", "")
+    username = author_url.rstrip("/").rsplit("/", 1)[-1]
+    if not username:
+        raise Exception("oembed returned no author_url")
+
+    # Step 2: user_id from profile page (same path that already works)
+    pr = session.get(
+        f"https://www.instagram.com/{username}/",
+        headers={
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+        },
+        timeout=30,
+    )
+    user_id = None
+    for pat in [
+        r'"owner_id"\s*:\s*"(\d{6,15})"',
+        r'"user_id"\s*:\s*"(\d{6,15})"',
+        r'"ds_user_id"\s*:\s*"(\d{6,15})"',
+        r'"pk"\s*:\s*"(\d{6,15})"',
+    ]:
+        m = re.search(pat, pr.text)
+        if m:
+            user_id = m.group(1)
+            break
+    if not user_id:
+        raise Exception(f"could not find user_id for @{username}")
+
+    # Step 3: search feed/user for this shortcode (up to 120 recent posts)
+    cursor = None
+    for _ in range(10):
+        params = {"count": 12}
+        if cursor:
+            params["max_id"] = cursor
+        r = session.get(
+            f"https://www.instagram.com/api/v1/feed/user/{user_id}/",
+            params=params,
+            timeout=20,
+        )
+        r.raise_for_status()
+        data = r.json()
+        for item in data.get("items", []):
+            if item.get("code") == shortcode or item.get("shortcode") == shortcode:
+                return item
+        if not data.get("more_available") or not data.get("next_max_id"):
+            break
+        cursor = data["next_max_id"]
+        time.sleep(random.uniform(2, 4))
+
+    raise Exception(
+        f"post not found in @{username}'s recent feed (checked up to 120 posts)"
+    )
+
+
 def _save_url_plain(url, path):
     """Download a CDN URL with no session cookies."""
     r = req_lib.get(url, stream=True, timeout=60,
@@ -781,17 +854,15 @@ def fetch_media():
         for code in codes:
             try:
                 print(f"[download] {code}", flush=True)
-                if code in items_by_code:
-                    # Use the media URLs already returned by feed/user — no extra API call
-                    item = items_by_code[code]
-                    if item.get("media_type") == 8:
-                        for i, child in enumerate(item.get("carousel_media", [])):
-                            _save_media_node(child, browser, session_dir, code, i)
-                    else:
-                        _save_media_node(item, browser, session_dir, code, 0)
+                item = items_by_code.get(code)
+                if item is None:
+                    # Single post URL: resolve via oembed → profile page → feed/user
+                    item = _get_single_post_item(code, session)
+                if item.get("media_type") == 8:
+                    for i, child in enumerate(item.get("carousel_media", [])):
+                        _save_media_node(child, browser, session_dir, code, i)
                 else:
-                    # Single post URL: scrape page with clean browser session (no API headers)
-                    download_post_via_html(code, browser, session_dir)
+                    _save_media_node(item, browser, session_dir, code, 0)
                 time.sleep(random.uniform(1, 3))
             except Exception as e:
                 msg = f"{code}: {e}"
