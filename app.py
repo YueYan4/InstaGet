@@ -708,7 +708,7 @@ def _fetch_og_meta(shortcode):
         return s.replace('\\u0026', '&').replace('\\/', '/').replace('&amp;', '&')
 
     _cdn_pat = re.compile(
-        r'https://(?:scontent|cdninstagram|instagram)[^\s"\'<>\\]+\.(?:jpg|jpeg|webp|mp4)'
+        r'https://(?:scontent|cdninstagram|instagram)[^\s"\'<>\\]+\.(?:jpg|jpeg|webp|mp4|heic|png)'
         r'(?:[?\\][^\s"\'<>]*)?'
     )
     _thumb_pat = re.compile(r'/[sp]\d+x\d+/')
@@ -774,14 +774,14 @@ def _fetch_og_meta(shortcode):
             for m2 in re.finditer(r'"candidates"\s*:\s*\[', window):
                 rest = window[m2.end():m2.end() + 2000]
                 u_m = re.search(
-                    r'"url"\s*:\s*"(https://(?:scontent|cdninstagram)[^"]+\.(?:jpg|jpeg|webp|mp4)[^"]*)"',
+                    r'"url"\s*:\s*"(https://(?:scontent|cdninstagram)[^"]+\.(?:jpg|jpeg|webp|mp4|heic|png)[^"]*)"',
                     rest,
                 )
                 if u_m:
                     u = u_m.group(1)
                     if not _small.search(u) and u not in seen_urls:
                         seen_urls.add(u)
-                        ext = 'mp4' if '.mp4' in u else 'jpg'
+                        ext = 'mp4' if '.mp4' in u else 'jpg'  # heic served as jpg via stp=dst-jpg
                         bot_items.append((ext, u))
 
             # Old GraphQL format
