@@ -723,29 +723,24 @@ def _get_single_post_item(shortcode, session, hint_username=None):
     # Full-resolution path via feed/user
     if username:
         try:
-            print(f"[single_post] fetching profile for @{username}", flush=True)
-            pr = session.get(
-                f"https://www.instagram.com/{username}/",
-                headers={
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Sec-Fetch-Dest": "document",
-                    "Sec-Fetch-Mode": "navigate",
-                    "Sec-Fetch-Site": "none",
-                },
-                timeout=30,
-            )
+            # Use web_profile_info JSON API to get user_id — avoids redirect-prone HTML pages
+            print(f"[single_post] looking up user_id for @{username}", flush=True)
             user_id = None
-            for pat in [
-                r'"owner_id"\s*:\s*"(\d{6,15})"',
-                r'"user_id"\s*:\s*"(\d{6,15})"',
-                r'"ds_user_id"\s*:\s*"(\d{6,15})"',
-                r'"pk"\s*:\s*"(\d{6,15})"',
-            ]:
-                m = re.search(pat, pr.text)
-                if m:
-                    user_id = m.group(1)
-                    break
-            print(f"[single_post] user_id={user_id} profile_status={pr.status_code}", flush=True)
+            wpi = session.get(
+                "https://www.instagram.com/api/v1/users/web_profile_info/",
+                params={"username": username},
+                timeout=20,
+            )
+            if wpi.ok:
+                wpi_data = wpi.json()
+                uid = (
+                    wpi_data.get("data", {}).get("user", {}).get("id")
+                    or wpi_data.get("user", {}).get("id")
+                    or wpi_data.get("graphql", {}).get("user", {}).get("id")
+                )
+                if uid:
+                    user_id = str(uid)
+            print(f"[single_post] user_id={user_id} wpi_status={wpi.status_code}", flush=True)
 
             target_media_id = str(shortcode_to_mediaid(shortcode))
 
