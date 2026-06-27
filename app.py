@@ -621,6 +621,8 @@ def _save_url_plain(url, path):
 def _scrape_urls_from_html(html):
     seen = set()
     urls = []
+
+    # 1. application/json script blobs
     for blob in re.findall(
         r'<script[^>]*type="application/json"[^>]*>(.*?)</script>', html, re.DOTALL
     ):
@@ -628,6 +630,28 @@ def _scrape_urls_from_html(html):
             urls.extend(_extract_post_media(json.loads(blob), seen))
         except Exception:
             pass
+
+    # 2. window.__additionalDataLoaded('/p/...', {...})
+    for data_str in re.findall(
+        r'window\.__additionalDataLoaded\([^,]+,\s*(\{.+?\})\s*\)', html, re.DOTALL
+    ):
+        try:
+            urls.extend(_extract_post_media(json.loads(data_str), seen))
+        except Exception:
+            pass
+
+    # 3. <img src> pointing to Instagram/Facebook CDN
+    for u in re.findall(r'<img[^>]+\bsrc="(https://[^"]+)"', html):
+        if re.search(r'(cdninstagram\.com|fbcdn\.net|scontent)', u) and u not in seen:
+            seen.add(u)
+            urls.append(('jpg', u))
+
+    # 4. <video src>
+    for u in re.findall(r'<video[^>]+\bsrc="(https://[^"]+)"', html):
+        if u not in seen:
+            seen.add(u)
+            urls.append(('mp4', u))
+
     return urls
 
 
@@ -655,12 +679,12 @@ def download_post_via_html(shortcode, session, dest_dir):
     except Exception as e:
         errors.append(f"embed: {e}")
 
-    # Strategy 2: ?__a=1 JSON endpoint via API session
+    # Strategy 2: ?__a=1 JSON endpoint without session (cookies cause redirect loops)
     try:
-        r = session.get(
+        r = req_lib.get(
             f"https://www.instagram.com/p/{shortcode}/",
             params={"__a": "1"},
-            headers={"Accept": "application/json, */*"},
+            headers={**_PLAIN_HEADERS, "Accept": "application/json, */*"},
             timeout=20,
         )
         if r.ok and r.text.strip():
