@@ -756,20 +756,33 @@ def _fetch_og_meta(shortcode):
                 current_username = um.group(1)
                 print(f"[og_meta] current_username={current_username} (og had {username!r})", flush=True)
 
-            # XIG Polaris format: "candidates":[{"url":"https://..."}]
-            # Each carousel item emits one candidates array; take first (highest-res) URL.
+            # Diagnostics: count candidates occurrences and CDN URLs in the window
+            n_cands = len(re.findall(r'"candidates"', window))
+            all_cdn = re.findall(
+                r'https://(?:scontent|cdninstagram)[^\s"\'<>]+', window
+            )
+            print(f"[og_meta] window_len={len(window)} candidates_hits={n_cands} cdn_urls={len(all_cdn)}", flush=True)
+            if n_cands > 0:
+                m_cand = re.search(r'"candidates"', window)
+                print(f"[og_meta] first_cand_ctx={window[m_cand.start():m_cand.start()+300]!r}", flush=True)
+            for cdnu in all_cdn[:3]:
+                print(f"[og_meta] cdn_sample={cdnu[:120]!r}", flush=True)
+
             _small = re.compile(r'/[sp]\d{1,3}x\d{1,3}/')
-            for m2 in re.finditer(
-                r'"candidates"\s*:\s*\[\s*\{\s*"url"\s*:\s*"(https://[^"]+\.(?:jpg|jpeg|webp|mp4)[^"]*)"',
-                window, re.DOTALL,
-            ):
-                u = m2.group(1)
-                if _small.search(u):
-                    continue
-                if u not in seen_urls:
-                    seen_urls.add(u)
-                    ext = 'mp4' if '.mp4' in u else 'jpg'
-                    bot_items.append((ext, u))
+
+            # XIG Polaris: "candidates":[  then first "url":"https://..." in next 2KB
+            for m2 in re.finditer(r'"candidates"\s*:\s*\[', window):
+                rest = window[m2.end():m2.end() + 2000]
+                u_m = re.search(
+                    r'"url"\s*:\s*"(https://(?:scontent|cdninstagram)[^"]+\.(?:jpg|jpeg|webp|mp4)[^"]*)"',
+                    rest,
+                )
+                if u_m:
+                    u = u_m.group(1)
+                    if not _small.search(u) and u not in seen_urls:
+                        seen_urls.add(u)
+                        ext = 'mp4' if '.mp4' in u else 'jpg'
+                        bot_items.append((ext, u))
 
             # Old GraphQL format
             for vurl in re.findall(r'"video_url"\s*:\s*"(https://[^"]+)"', window):
