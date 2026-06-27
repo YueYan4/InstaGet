@@ -699,42 +699,58 @@ def _fetch_og_meta(shortcode):
             break
 
     # Try to extract full-res CDN URLs from the ~900KB bot-UA page HTML.
-    # Instagram embeds JSON blobs with display_url/video_url in the page.
+    # Restrict all searches to blobs/windows that contain the shortcode so
+    # we don't accidentally pick up unrelated images from the same page.
     bot_items = []
     seen_urls = set()
 
     def _unesc(s):
         return s.replace('\\u0026', '&').replace('\\/', '/').replace('&amp;', '&')
 
+    _cdn_pat = re.compile(
+        r'https://(?:scontent|cdninstagram|instagram)[^\s"\'<>\\]+\.(?:jpg|jpeg|webp|mp4)'
+        r'(?:[?\\][^\s"\'<>]*)?'
+    )
+    _thumb_pat = re.compile(r'/[sp]\d+x\d+/')
+
+    # JSON-LD / application/json script blocks — only if they mention the shortcode
     for blob in re.findall(
         r'<script[^>]*type=["\']application/(?:json|ld\+json)["\'][^>]*>(.*?)</script>',
         html, re.DOTALL | re.IGNORECASE,
     ):
+        if shortcode not in blob:
+            continue
         try:
             bot_items.extend(_extract_post_media(json.loads(blob), seen_urls))
         except Exception:
             pass
 
+    # window.__additionalDataLoaded — only if it mentions the shortcode
     for raw_m in re.finditer(
         r'window\.__additionalDataLoaded\s*\([^,]+,\s*(\{.*?\})\s*\)',
         html, re.DOTALL,
     ):
+        if shortcode not in raw_m.group(1):
+            continue
         try:
             bot_items.extend(_extract_post_media(json.loads(raw_m.group(1)), seen_urls))
         except Exception:
             pass
 
-    for raw in re.findall(
-        r'https://(?:scontent|cdninstagram|instagram)[^\s"\'<>\\]+\.(?:jpg|jpeg|webp|mp4)(?:[?\\][^\s"\'<>]*)?',
-        html,
-    ):
-        u = _unesc(raw.split('\\')[0])
-        if re.search(r'/s\d+x\d+/', u):
-            continue
-        if u not in seen_urls:
-            seen_urls.add(u)
-            ext = 'mp4' if '.mp4' in u else 'jpg'
-            bot_items.append((ext, u))
+    # CDN URL scan — ONLY within a window around the shortcode's position,
+    # and only as a fallback when structured JSON found nothing
+    if not bot_items:
+        sc_pos = html.find(shortcode)
+        if sc_pos >= 0:
+            window = html[max(0, sc_pos - 2000):sc_pos + 15000]
+            for raw in _cdn_pat.findall(window):
+                u = _unesc(raw.split('\\')[0])
+                if _thumb_pat.search(u):
+                    continue
+                if u not in seen_urls:
+                    seen_urls.add(u)
+                    ext = 'mp4' if '.mp4' in u else 'jpg'
+                    bot_items.append((ext, u))
 
     if bot_items:
         print(f"[og_meta] extracted {len(bot_items)} media url(s) from page HTML", flush=True)
