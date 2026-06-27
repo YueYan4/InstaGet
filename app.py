@@ -598,36 +598,86 @@ def _extract_post_media(obj, seen=None):
     return result
 
 
-def download_post_via_html(shortcode, session, dest_dir):
-    """Scrape post page HTML for media URLs — avoids all rate-limited API endpoints."""
-    try:
-        r = session.get(
-            f"https://www.instagram.com/p/{shortcode}/",
-            headers={
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Sec-Fetch-Dest": "document",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-Site": "none",
-            },
-            timeout=30,
-        )
-    except Exception as e:
-        raise Exception(f"post page fetch: {e}")
-    if not r.ok:
-        raise Exception(f"post page HTTP {r.status_code}")
+_PLAIN_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) "
+        "Gecko/20100101 Firefox/124.0"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate",
+}
+
+
+def _save_url_plain(url, path):
+    """Download a CDN URL with no session cookies."""
+    r = req_lib.get(url, stream=True, timeout=60,
+                    headers={**_PLAIN_HEADERS, "Accept": "image/webp,*/*"})
+    r.raise_for_status()
+    with open(path, "wb") as f:
+        for chunk in r.iter_content(65536):
+            f.write(chunk)
+
+
+def _scrape_urls_from_html(html):
     seen = set()
     urls = []
     for blob in re.findall(
-        r'<script[^>]*type="application/json"[^>]*>(.*?)</script>', r.text, re.DOTALL
+        r'<script[^>]*type="application/json"[^>]*>(.*?)</script>', html, re.DOTALL
     ):
         try:
             urls.extend(_extract_post_media(json.loads(blob), seen))
         except Exception:
             pass
-    if not urls:
-        raise Exception(f"no media URLs found in post page HTML for {shortcode}")
-    for i, (ext, url) in enumerate(urls):
-        _save_url(session, url, dest_dir / f"{shortcode}_{i:02d}.{ext}")
+    return urls
+
+
+def download_post_via_html(shortcode, session, dest_dir):
+    """Download single post without touching any rate-limited API endpoint."""
+    errors = []
+
+    # Strategy 1: embed page — no auth needed, designed for external embedding
+    try:
+        r = req_lib.get(
+            f"https://www.instagram.com/p/{shortcode}/embed/captioned/",
+            headers={**_PLAIN_HEADERS,
+                     "Accept": "text/html,application/xhtml+xml,*/*"},
+            timeout=30,
+        )
+        if r.ok:
+            urls = _scrape_urls_from_html(r.text)
+            if urls:
+                for i, (ext, url) in enumerate(urls):
+                    _save_url_plain(url, dest_dir / f"{shortcode}_{i:02d}.{ext}")
+                return
+            errors.append("embed: no media URLs in JSON blobs")
+        else:
+            errors.append(f"embed: HTTP {r.status_code}")
+    except Exception as e:
+        errors.append(f"embed: {e}")
+
+    # Strategy 2: ?__a=1 JSON endpoint via API session
+    try:
+        r = session.get(
+            f"https://www.instagram.com/p/{shortcode}/",
+            params={"__a": "1"},
+            headers={"Accept": "application/json, */*"},
+            timeout=20,
+        )
+        if r.ok and r.text.strip():
+            data = r.json()
+            node = (data.get("graphql", {}).get("shortcode_media")
+                    or (data.get("items") or [None])[0])
+            if node:
+                urls = _extract_post_media(node)
+                if urls:
+                    for i, (ext, url) in enumerate(urls):
+                        _save_url_plain(url, dest_dir / f"{shortcode}_{i:02d}.{ext}")
+                    return
+        errors.append(f"?__a=1: HTTP {r.status_code} body={r.text[:100]}")
+    except Exception as e:
+        errors.append(f"?__a=1: {e}")
+
+    raise Exception(f"single post download failed — {'; '.join(errors)}")
 
 
 def _load_session_rows():
