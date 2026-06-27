@@ -737,8 +737,10 @@ def _fetch_og_meta(shortcode):
         except Exception:
             pass
 
-    # CDN URL scan — anchor on JSON key patterns, not bare URL occurrences.
-    # "code":"SHORTCODE" only appears in data blobs, not in <head> meta tags.
+    # Targeted extraction: anchor on JSON key, then pick out display_url /
+    # video_url fields explicitly — avoids pulling in unrelated CDN images.
+    # Also accept s1080x1080 paths (full-display quality); only skip tiny
+    # thumbnails (< 4 digits, e.g. s150x150 / p240x240 / s640x640).
     if not bot_items:
         uhtml = html.replace('\\/', '/').replace('\\u0026', '&').replace('&amp;', '&')
         for json_key in [f'"code":"{shortcode}"', f'"shortcode":"{shortcode}"']:
@@ -746,14 +748,27 @@ def _fetch_og_meta(shortcode):
             print(f"[og_meta] json_key={json_key!r} pos={kpos}", flush=True)
             if kpos < 0:
                 continue
-            window = uhtml[max(0, kpos - 500):kpos + 30000]
-            for raw in _cdn_pat.findall(window):
-                if _thumb_pat.search(raw):
-                    continue
-                if raw not in seen_urls:
-                    seen_urls.add(raw)
-                    ext = 'mp4' if '.mp4' in raw else 'jpg'
-                    bot_items.append((ext, raw))
+            window = uhtml[max(0, kpos - 500):kpos + 40000]
+            # Primary: grab explicitly-labelled display_url / video_url values
+            for vurl in re.findall(r'"video_url"\s*:\s*"(https://[^"]+)"', window):
+                if vurl not in seen_urls:
+                    seen_urls.add(vurl)
+                    bot_items.append(('mp4', vurl))
+            for durl in re.findall(r'"display_url"\s*:\s*"(https://[^"]+)"', window):
+                if durl not in seen_urls:
+                    seen_urls.add(durl)
+                    bot_items.append(('jpg', durl))
+            print(f"[og_meta] display/video urls in window: {len(bot_items)}", flush=True)
+            # Fallback: bare CDN URLs, skip only small thumbnails (3-digit size)
+            if not bot_items:
+                _small_thumb = re.compile(r'/[sp]\d{1,3}x\d{1,3}/')
+                for raw in _cdn_pat.findall(window):
+                    if _small_thumb.search(raw):
+                        continue
+                    if raw not in seen_urls:
+                        seen_urls.add(raw)
+                        ext = 'mp4' if '.mp4' in raw else 'jpg'
+                        bot_items.append((ext, raw))
             if bot_items:
                 break
 
