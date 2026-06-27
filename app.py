@@ -737,20 +737,41 @@ def _fetch_og_meta(shortcode):
         except Exception:
             pass
 
-    # Targeted extraction: anchor on JSON key, then pick out display_url /
-    # video_url fields explicitly — avoids pulling in unrelated CDN images.
-    # Also accept s1080x1080 paths (full-display quality); only skip tiny
-    # thumbnails (< 4 digits, e.g. s150x150 / p240x240 / s640x640).
+    # Targeted extraction anchored on the JSON "code" key.
+    # Instagram's XIG Polaris format stores images in image_versions2.candidates[].url
+    # (NOT display_url). Also extract the CURRENT username in case the account was
+    # renamed (e.g. shya → hyunsdraw), which causes redirect loops on old usernames.
+    current_username = username  # may be overridden below
     if not bot_items:
         uhtml = html.replace('\\/', '/').replace('\\u0026', '&').replace('&amp;', '&')
         for json_key in [f'"code":"{shortcode}"', f'"shortcode":"{shortcode}"']:
             kpos = uhtml.find(json_key)
-            print(f"[og_meta] json_key={json_key!r} pos={kpos}", flush=True)
             if kpos < 0:
                 continue
-            print(f"[og_meta] ctx={uhtml[kpos:kpos+400]!r}", flush=True)
-            window = uhtml[max(0, kpos - 500):kpos + 40000]
-            # Primary: grab explicitly-labelled display_url / video_url values
+            window = uhtml[max(0, kpos - 500):kpos + 60000]
+
+            # Extract current username from the JSON context
+            um = re.search(r'"username"\s*:\s*"([A-Za-z0-9_.]+)"', window[:2000])
+            if um and um.group(1) != current_username:
+                current_username = um.group(1)
+                print(f"[og_meta] current_username={current_username} (og had {username!r})", flush=True)
+
+            # XIG Polaris format: "candidates":[{"url":"https://..."}]
+            # Each carousel item emits one candidates array; take first (highest-res) URL.
+            _small = re.compile(r'/[sp]\d{1,3}x\d{1,3}/')
+            for m2 in re.finditer(
+                r'"candidates"\s*:\s*\[\s*\{\s*"url"\s*:\s*"(https://[^"]+\.(?:jpg|jpeg|webp|mp4)[^"]*)"',
+                window, re.DOTALL,
+            ):
+                u = m2.group(1)
+                if _small.search(u):
+                    continue
+                if u not in seen_urls:
+                    seen_urls.add(u)
+                    ext = 'mp4' if '.mp4' in u else 'jpg'
+                    bot_items.append((ext, u))
+
+            # Old GraphQL format
             for vurl in re.findall(r'"video_url"\s*:\s*"(https://[^"]+)"', window):
                 if vurl not in seen_urls:
                     seen_urls.add(vurl)
@@ -759,26 +780,17 @@ def _fetch_og_meta(shortcode):
                 if durl not in seen_urls:
                     seen_urls.add(durl)
                     bot_items.append(('jpg', durl))
-            print(f"[og_meta] display/video urls in window: {len(bot_items)}", flush=True)
-            # Fallback: bare CDN URLs, skip only small thumbnails (3-digit size)
-            if not bot_items:
-                _small_thumb = re.compile(r'/[sp]\d{1,3}x\d{1,3}/')
-                for raw in _cdn_pat.findall(window):
-                    if _small_thumb.search(raw):
-                        continue
-                    if raw not in seen_urls:
-                        seen_urls.add(raw)
-                        ext = 'mp4' if '.mp4' in raw else 'jpg'
-                        bot_items.append((ext, raw))
+
+            print(f"[og_meta] extracted from json_key: {len(bot_items)} url(s)", flush=True)
             if bot_items:
                 break
 
     if bot_items:
-        print(f"[og_meta] extracted {len(bot_items)} media url(s) from page HTML", flush=True)
+        print(f"[og_meta] total {len(bot_items)} media url(s)", flush=True)
     else:
         print(f"[og_meta] no media urls found in page HTML", flush=True)
 
-    return username, og_image, bot_items
+    return current_username, og_image, bot_items
 
 
 def _get_single_post_item(shortcode, session, hint_username=None):
