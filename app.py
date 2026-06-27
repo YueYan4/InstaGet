@@ -723,24 +723,87 @@ def _get_single_post_item(shortcode, session, hint_username=None):
     # Full-resolution path via feed/user
     if username:
         try:
-            # Use web_profile_info JSON API to get user_id — avoids redirect-prone HTML pages
             print(f"[single_post] looking up user_id for @{username}", flush=True)
             user_id = None
-            wpi = session.get(
-                "https://www.instagram.com/api/v1/users/web_profile_info/",
-                params={"username": username},
-                timeout=20,
-            )
-            if wpi.ok:
-                wpi_data = wpi.json()
-                uid = (
-                    wpi_data.get("data", {}).get("user", {}).get("id")
-                    or wpi_data.get("user", {}).get("id")
-                    or wpi_data.get("graphql", {}).get("user", {}).get("id")
+
+            # Method 1: web_profile_info JSON API
+            try:
+                wpi = session.get(
+                    "https://www.instagram.com/api/v1/users/web_profile_info/",
+                    params={"username": username},
+                    timeout=15,
                 )
-                if uid:
-                    user_id = str(uid)
-            print(f"[single_post] user_id={user_id} wpi_status={wpi.status_code}", flush=True)
+                print(f"[single_post] wpi_status={wpi.status_code}", flush=True)
+                if wpi.ok:
+                    wd = wpi.json()
+                    uid = (wd.get("data", {}).get("user", {}).get("id")
+                           or wd.get("user", {}).get("id")
+                           or wd.get("graphql", {}).get("user", {}).get("id"))
+                    if uid:
+                        user_id = str(uid)
+            except Exception as e:
+                print(f"[single_post] wpi error: {e}", flush=True)
+
+            # Method 2: user-search API
+            if not user_id:
+                try:
+                    sr = session.get(
+                        "https://www.instagram.com/api/v1/users/search/",
+                        params={"q": username, "count": 5},
+                        timeout=15,
+                    )
+                    print(f"[single_post] search_status={sr.status_code}", flush=True)
+                    if sr.ok:
+                        for u in sr.json().get("users", []):
+                            if u.get("username", "").lower() == username.lower():
+                                user_id = str(u.get("pk") or u.get("id") or "")
+                                break
+                except Exception as e:
+                    print(f"[single_post] search error: {e}", flush=True)
+
+            # Method 3: profile ?__a=1 without cookies
+            if not user_id:
+                try:
+                    r3 = req_lib.get(
+                        f"https://www.instagram.com/{username}/",
+                        params={"__a": "1", "__d": "dis"},
+                        headers={**_PLAIN_HEADERS, "Accept": "application/json,*/*"},
+                        timeout=15,
+                    )
+                    print(f"[single_post] a1_status={r3.status_code} len={len(r3.text)}", flush=True)
+                    if r3.ok and r3.text.strip().startswith("{"):
+                        d3 = r3.json()
+                        uid = (d3.get("graphql", {}).get("user", {}).get("id")
+                               or d3.get("user", {}).get("id"))
+                        if uid:
+                            user_id = str(uid)
+                except Exception as e:
+                    print(f"[single_post] a1 error: {e}", flush=True)
+
+            # Method 4: derive from media_id bit-shift and verify by username
+            if not user_id:
+                try:
+                    media_id = shortcode_to_mediaid(shortcode)
+                    for shift in [23, 26]:
+                        candidate = str(media_id >> shift)
+                        rv = session.get(
+                            f"https://www.instagram.com/api/v1/feed/user/{candidate}/",
+                            params={"count": 1},
+                            timeout=10,
+                        )
+                        if rv.ok:
+                            items = rv.json().get("items", [])
+                            if items:
+                                owner = (items[0].get("user") or
+                                         items[0].get("owner") or {})
+                                if owner.get("username", "").lower() == username.lower():
+                                    user_id = candidate
+                                    print(f"[single_post] user_id={user_id} from shift>>{shift}", flush=True)
+                                    break
+                except Exception as e:
+                    print(f"[single_post] shift error: {e}", flush=True)
+
+            print(f"[single_post] final user_id={user_id}", flush=True)
 
             target_media_id = str(shortcode_to_mediaid(shortcode))
 
