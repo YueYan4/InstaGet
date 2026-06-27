@@ -611,23 +611,33 @@ _PLAIN_HEADERS = {
 def _fetch_og_meta(shortcode):
     """
     Fetch the post page as Facebook's link-preview crawler.
-    Instagram serves OG metadata to this UA, giving us og:title (which contains
-    the username) and og:image (thumbnail) without cookies or redirects.
+    Uses allow_redirects=False so a redirect loop never raises TooManyRedirects.
     Returns (username_or_None, og_image_url_or_None).
     """
-    r = req_lib.get(
-        f"https://www.instagram.com/p/{shortcode}/",
-        headers={
-            "User-Agent": (
-                "facebookexternalhit/1.1 "
-                "(+http://www.facebook.com/externalhit_uatext.php)"
-            ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Accept-Encoding": "gzip, deflate",
-        },
-        timeout=30,
-    )
+    try:
+        r = req_lib.get(
+            f"https://www.instagram.com/p/{shortcode}/",
+            headers={
+                "User-Agent": (
+                    "facebookexternalhit/1.1 "
+                    "(+http://www.facebook.com/externalhit_uatext.php)"
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Accept-Encoding": "gzip, deflate",
+            },
+            allow_redirects=False,
+            timeout=15,
+        )
+    except Exception as e:
+        print(f"[og_meta] request error: {e}", flush=True)
+        return None, None
+
+    if r.status_code in (301, 302, 303, 307, 308):
+        loc = r.headers.get("Location", "?")
+        print(f"[og_meta] redirect {r.status_code} -> {loc[:120]}", flush=True)
+        return None, None
+
     if not r.ok:
         print(f"[og_meta] HTTP {r.status_code}", flush=True)
         return None, None
@@ -687,48 +697,51 @@ def _get_single_post_item(shortcode, session, hint_username=None):
 
     # Full-resolution path via feed/user
     if username:
-        pr = session.get(
-            f"https://www.instagram.com/{username}/",
-            headers={
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Sec-Fetch-Dest": "document",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-Site": "none",
-            },
-            timeout=30,
-        )
-        user_id = None
-        for pat in [
-            r'"owner_id"\s*:\s*"(\d{6,15})"',
-            r'"user_id"\s*:\s*"(\d{6,15})"',
-            r'"ds_user_id"\s*:\s*"(\d{6,15})"',
-            r'"pk"\s*:\s*"(\d{6,15})"',
-        ]:
-            m = re.search(pat, pr.text)
-            if m:
-                user_id = m.group(1)
-                break
-
-        if user_id:
-            cursor = None
-            for _ in range(10):
-                params = {"count": 12}
-                if cursor:
-                    params["max_id"] = cursor
-                r = session.get(
-                    f"https://www.instagram.com/api/v1/feed/user/{user_id}/",
-                    params=params,
-                    timeout=20,
-                )
-                r.raise_for_status()
-                data = r.json()
-                for item in data.get("items", []):
-                    if item.get("code") == shortcode or item.get("shortcode") == shortcode:
-                        return item
-                if not data.get("more_available") or not data.get("next_max_id"):
+        try:
+            pr = session.get(
+                f"https://www.instagram.com/{username}/",
+                headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Site": "none",
+                },
+                timeout=30,
+            )
+            user_id = None
+            for pat in [
+                r'"owner_id"\s*:\s*"(\d{6,15})"',
+                r'"user_id"\s*:\s*"(\d{6,15})"',
+                r'"ds_user_id"\s*:\s*"(\d{6,15})"',
+                r'"pk"\s*:\s*"(\d{6,15})"',
+            ]:
+                m = re.search(pat, pr.text)
+                if m:
+                    user_id = m.group(1)
                     break
-                cursor = data["next_max_id"]
-                time.sleep(random.uniform(2, 4))
+
+            if user_id:
+                cursor = None
+                for _ in range(10):
+                    params = {"count": 12}
+                    if cursor:
+                        params["max_id"] = cursor
+                    r = session.get(
+                        f"https://www.instagram.com/api/v1/feed/user/{user_id}/",
+                        params=params,
+                        timeout=20,
+                    )
+                    r.raise_for_status()
+                    data = r.json()
+                    for item in data.get("items", []):
+                        if item.get("code") == shortcode or item.get("shortcode") == shortcode:
+                            return item
+                    if not data.get("more_available") or not data.get("next_max_id"):
+                        break
+                    cursor = data["next_max_id"]
+                    time.sleep(random.uniform(2, 4))
+        except Exception as e:
+            print(f"[single_post] feed path error: {e}", flush=True)
 
     # Fallback: OG thumbnail (lower resolution but functional)
     if og_image_url:
