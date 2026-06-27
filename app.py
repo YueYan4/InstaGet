@@ -133,6 +133,27 @@ def _make_profile_session(rows):
     return s
 
 
+def _make_browser_session(rows):
+    """
+    Minimal browser session for page fetches and CDN downloads.
+    No Instagram API headers — those cause redirect loops on page navigation.
+    """
+    s = req_lib.Session()
+    s.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) "
+            "Gecko/20100101 Firefox/124.0"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate",
+        "Connection": "keep-alive",
+    })
+    for name, value, host, path in rows:
+        s.cookies.set(name, value, domain=host, path=path)
+        s.cookies.set(name, value, domain="www.instagram.com", path=path)
+    return s
+
+
 def _parse_codes_from_json(obj, seen=None):
     """Recursively walk any dict/list and collect all shortcode/code values."""
     if seen is None:
@@ -528,16 +549,7 @@ def shortcode_to_mediaid(shortcode):
 def _save_url(session, url, path):
     print(f"[_save_url] {url[:120]}", flush=True)
     try:
-        r = req_lib.get(
-            url, stream=True, timeout=60,
-            headers={
-                "Accept": "image/webp,*/*",
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) "
-                    "Gecko/20100101 Firefox/124.0"
-                ),
-            },
-        )
+        r = session.get(url, stream=True, timeout=60, headers={"Accept": "image/webp,*/*"})
         r.raise_for_status()
     except Exception as e:
         raise Exception(f"CDN fetch failed ({url[:80]}): {e}")
@@ -596,10 +608,6 @@ def download_post_via_html(shortcode, session, dest_dir):
                 "Sec-Fetch-Dest": "document",
                 "Sec-Fetch-Mode": "navigate",
                 "Sec-Fetch-Site": "none",
-                # Remove AJAX/API headers that don't belong on a page navigation
-                "X-Requested-With": None,
-                "X-IG-App-ID": None,
-                "Origin": None,
             },
             timeout=30,
         )
@@ -679,16 +687,17 @@ def fetch_media():
     session_dir.mkdir()
 
     try:
-        L = make_loader()
-        rows = load_session_cookies(L)
-        session = _make_profile_session(rows)
+        rows = _load_session_rows()
+        session = _make_profile_session(rows)   # for Instagram API calls
+        browser = _make_browser_session(rows)   # for page fetches + CDN downloads
 
         profile_total = None
         profile_diag = {}
+        items_by_code = {}
         if url_type == "post":
             codes = [identifier]
         else:
-            codes, _items, profile_total, profile_diag = get_profile_post_codes(
+            codes, items_by_code, profile_total, profile_diag = get_profile_post_codes(
                 identifier, session, limit
             )
             if not codes:
@@ -696,18 +705,24 @@ def fetch_media():
 
         download_errors = []
         for code in codes:
-            for attempt in range(3):
-                try:
-                    print(f"[download] {code} attempt={attempt+1}", flush=True)
-                    post = instaloader.Post.from_shortcode(L.context, code)
-                    L.download_post(post, target=session_dir)
-                    break
-                except Exception as e:
-                    print(f"[download] {code} attempt={attempt+1} error: {e}", flush=True)
-                    if attempt < 2:
-                        time.sleep(random.uniform(5, 10))
+            try:
+                print(f"[download] {code}", flush=True)
+                if code in items_by_code:
+                    # Use the media URLs already returned by feed/user — no extra API call
+                    item = items_by_code[code]
+                    if item.get("media_type") == 8:
+                        for i, child in enumerate(item.get("carousel_media", [])):
+                            _save_media_node(child, browser, session_dir, code, i)
                     else:
-                        download_errors.append(f"{code}: {e}")
+                        _save_media_node(item, browser, session_dir, code, 0)
+                else:
+                    # Single post URL: scrape page with clean browser session (no API headers)
+                    download_post_via_html(code, browser, session_dir)
+                time.sleep(random.uniform(1, 3))
+            except Exception as e:
+                msg = f"{code}: {e}"
+                print(f"Skipping {msg}", flush=True)
+                download_errors.append(msg)
 
         media_files = sorted([
             f for f in session_dir.rglob("*")
