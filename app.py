@@ -748,6 +748,7 @@ def _fetch_og_meta(shortcode):
             print(f"[og_meta] json_key={json_key!r} pos={kpos}", flush=True)
             if kpos < 0:
                 continue
+            print(f"[og_meta] ctx={uhtml[kpos:kpos+400]!r}", flush=True)
             window = uhtml[max(0, kpos - 500):kpos + 40000]
             # Primary: grab explicitly-labelled display_url / video_url values
             for vurl in re.findall(r'"video_url"\s*:\s*"(https://[^"]+)"', window):
