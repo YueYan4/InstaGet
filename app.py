@@ -608,90 +608,142 @@ _PLAIN_HEADERS = {
 }
 
 
-def _get_single_post_item(shortcode, session, hint_username=None):
+def _fetch_og_meta(shortcode):
     """
-    Resolve a single post shortcode to a feed item dict.
-    Uses hint_username (extracted from URL) if available, otherwise tries oembed.
-    Then: profile page → user_id → feed/user search.
+    Fetch the post page as Facebook’s link-preview crawler.
+    Instagram serves OG metadata to this UA, giving us og:title (which contains
+    the username) and og:image (thumbnail) without cookies or redirects.
+    Returns (username_or_None, og_image_url_or_None).
     """
-    username = hint_username
-
-    # Try oembed for username if not already known
-    if not username:
-        try:
-            oe = req_lib.get(
-                "https://api.instagram.com/oembed/",
-                params={"url": f"https://www.instagram.com/p/{shortcode}/"},
-                headers=_PLAIN_HEADERS,
-                timeout=15,
-            )
-            if oe.ok and oe.text.strip().startswith("{"):
-                author_url = oe.json().get("author_url", "")
-                candidate = author_url.rstrip("/").rsplit("/", 1)[-1]
-                if candidate:
-                    username = candidate
-        except Exception:
-            pass
-
-    if not username:
-        raise Exception(
-            "Could not identify the post’s author from this server. "
-            "Tip: paste the profile URL (instagram.com/username/) instead — "
-            "profile downloads work reliably."
-        )
-
-    # Get user_id from profile page
-    pr = session.get(
-        f"https://www.instagram.com/{username}/",
+    r = req_lib.get(
+        f"https://www.instagram.com/p/{shortcode}/",
         headers={
+            "User-Agent": (
+                "facebookexternalhit/1.1 "
+                "(+http://www.facebook.com/externalhit_uatext.php)"
+            ),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate",
         },
         timeout=30,
     )
-    user_id = None
-    for pat in [
-        r'"owner_id"\s*:\s*"(\d{6,15})"',
-        r'"user_id"\s*:\s*"(\d{6,15})"',
-        r'"ds_user_id"\s*:\s*"(\d{6,15})"',
-        r'"pk"\s*:\s*"(\d{6,15})"',
-    ]:
-        m = re.search(pat, pr.text)
-        if m:
-            user_id = m.group(1)
-            break
-    if not user_id:
-        raise Exception(
-            f"Could not find user_id for @{username}. "
-            "Try the profile URL (instagram.com/{username}/) instead."
-        )
+    if not r.ok:
+        print(f"[og_meta] HTTP {r.status_code}", flush=True)
+        return None, None
 
-    # Search feed/user for this shortcode (up to 120 recent posts)
-    cursor = None
-    for _ in range(10):
-        params = {"count": 12}
-        if cursor:
-            params["max_id"] = cursor
-        r = session.get(
-            f"https://www.instagram.com/api/v1/feed/user/{user_id}/",
-            params=params,
-            timeout=20,
-        )
-        r.raise_for_status()
-        data = r.json()
-        for item in data.get("items", []):
-            if item.get("code") == shortcode or item.get("shortcode") == shortcode:
-                return item
-        if not data.get("more_available") or not data.get("next_max_id"):
+    html = r.text
+    print(f"[og_meta] status={r.status_code} len={len(html)}", flush=True)
+
+    username = None
+    # og:title is "@username on Instagram: …" or "username on Instagram: …"
+    for pat in [
+        r’<meta\s+property="og:title"\s+content="([^"]*)"’,
+        r’<meta\s+content="([^"]*)"\s+property="og:title"’,
+    ]:
+        m = re.search(pat, html)
+        if m:
+            title = (m.group(1)
+                     .replace(‘&amp;’, ‘&’)
+                     .replace(‘&#039;’, "’")
+                     .replace(‘&quot;’, ‘"’))
+            um = re.match(r’@?([A-Za-z0-9_.]+)\s+on\s+Instagram’, title, re.IGNORECASE)
+            if um:
+                username = um.group(1)
+                print(f"[og_meta] username={username}", flush=True)
             break
-        cursor = data["next_max_id"]
-        time.sleep(random.uniform(2, 4))
+
+    og_image = None
+    for pat in [
+        r’<meta\s+property="og:image"\s+content="([^"]*)"’,
+        r’<meta\s+content="([^"]*)"\s+property="og:image"’,
+    ]:
+        m = re.search(pat, html)
+        if m:
+            og_image = m.group(1).replace(‘&amp;’, ‘&’)
+            break
+
+    return username, og_image
+
+
+def _get_single_post_item(shortcode, session, hint_username=None):
+    """
+    Resolve a single post shortcode to a feed item dict.
+    Strategy:
+      1. hint_username (from URL format) OR facebookexternalhit OG fetch → username
+      2. Profile page HTML → user_id
+      3. feed/user/{id}/ search → full-resolution item
+    Fallback: if username found but post not in feed, return synthetic item
+              with the OG thumbnail so the user gets something.
+    """
+    username = hint_username
+    og_image_url = None
+
+    if not username:
+        try:
+            username, og_image_url = _fetch_og_meta(shortcode)
+        except Exception as e:
+            print(f"[og_meta] exception: {e}", flush=True)
+
+    # Full-resolution path via feed/user
+    if username:
+        pr = session.get(
+            f"https://www.instagram.com/{username}/",
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+            },
+            timeout=30,
+        )
+        user_id = None
+        for pat in [
+            r’"owner_id"\s*:\s*"(\d{6,15})"’,
+            r’"user_id"\s*:\s*"(\d{6,15})"’,
+            r’"ds_user_id"\s*:\s*"(\d{6,15})"’,
+            r’"pk"\s*:\s*"(\d{6,15})"’,
+        ]:
+            m = re.search(pat, pr.text)
+            if m:
+                user_id = m.group(1)
+                break
+
+        if user_id:
+            cursor = None
+            for _ in range(10):
+                params = {"count": 12}
+                if cursor:
+                    params["max_id"] = cursor
+                r = session.get(
+                    f"https://www.instagram.com/api/v1/feed/user/{user_id}/",
+                    params=params,
+                    timeout=20,
+                )
+                r.raise_for_status()
+                data = r.json()
+                for item in data.get("items", []):
+                    if item.get("code") == shortcode or item.get("shortcode") == shortcode:
+                        return item
+                if not data.get("more_available") or not data.get("next_max_id"):
+                    break
+                cursor = data["next_max_id"]
+                time.sleep(random.uniform(2, 4))
+
+    # Fallback: OG thumbnail (lower resolution but functional)
+    if og_image_url:
+        print(f"[og_meta] using thumbnail fallback", flush=True)
+        return {
+            "media_type": 1,
+            "image_versions2": {
+                "candidates": [{"url": og_image_url}]
+            },
+            "code": shortcode,
+        }
 
     raise Exception(
-        f"Post not found in @{username}’s recent feed (searched ~120 posts). "
-        "The post may be older — try the profile URL instead."
+        "Could not download this post from the server. "
+        "Try the profile URL (instagram.com/username/) instead."
     )
 
 
@@ -835,6 +887,7 @@ def fetch_media():
     data = request.get_json(silent=True) or {}
     url = data.get("url", "").strip()
     limit = data.get("limit", None)
+    body_hint_username = (data.get("hint_username") or "").strip().lstrip("@") or None
 
     if not url or "instagram.com" not in url:
         return jsonify({"error": "Please provide a valid Instagram URL."}), 400
@@ -843,9 +896,9 @@ def fetch_media():
     if not url_type:
         return jsonify({"error": "Could not parse that Instagram URL."}), 400
 
-    # Extract username from URL if it uses /{username}/p/{shortcode}/ format
-    url_hint_username = None
-    if url_type == "post":
+    # Resolve hint_username: prefer explicit body param, then URL-embedded username
+    url_hint_username = body_hint_username
+    if not url_hint_username and url_type == "post":
         um = re.search(r'instagram\.com/([A-Za-z0-9_.]+)/(?:p|reel|reels|tv)/', url)
         if um and um.group(1) not in {
             "p", "reel", "reels", "tv", "stories", "explore", "accounts", "direct"
