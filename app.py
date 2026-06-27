@@ -737,15 +737,16 @@ def _fetch_og_meta(shortcode):
         except Exception:
             pass
 
-    # CDN URL scan — scan all shortcode positions in the un-escaped HTML.
-    # Position 1590 is a meta/canonical tag in <head>; the actual data JSON
-    # is much further in the 900KB document. Try each occurrence's window.
+    # CDN URL scan — anchor on JSON key patterns, not bare URL occurrences.
+    # "code":"SHORTCODE" only appears in data blobs, not in <head> meta tags.
     if not bot_items:
         uhtml = html.replace('\\/', '/').replace('\\u0026', '&').replace('&amp;', '&')
-        positions = [m.start() for m in re.finditer(re.escape(shortcode), uhtml)]
-        print(f"[og_meta] shortcode at {len(positions)} pos(s): {positions[:6]}", flush=True)
-        for sc_pos in positions:
-            window = uhtml[max(0, sc_pos - 1000):sc_pos + 25000]
+        for json_key in [f'"code":"{shortcode}"', f'"shortcode":"{shortcode}"']:
+            kpos = uhtml.find(json_key)
+            print(f"[og_meta] json_key={json_key!r} pos={kpos}", flush=True)
+            if kpos < 0:
+                continue
+            window = uhtml[max(0, kpos - 500):kpos + 30000]
             for raw in _cdn_pat.findall(window):
                 if _thumb_pat.search(raw):
                     continue
@@ -777,6 +778,29 @@ def _get_single_post_item(shortcode, session, hint_username=None):
     username = hint_username
     og_image_url = None
     bot_items = []
+
+    # Quickest path: ?__a=1 on the post URL returns JSON with the full item
+    try:
+        ra = req_lib.get(
+            f"https://www.instagram.com/p/{shortcode}/",
+            params={"__a": "1", "__d": "dis"},
+            headers={**_PLAIN_HEADERS, "Accept": "application/json,*/*"},
+            allow_redirects=False,
+            timeout=15,
+        )
+        print(f"[single_post] a1_post_status={ra.status_code} len={len(ra.text)}", flush=True)
+        if ra.ok and ra.text.strip().startswith("{"):
+            d = ra.json()
+            item = (
+                (d.get("items") or [None])[0]
+                or d.get("graphql", {}).get("shortcode_media")
+                or d.get("data", {}).get("shortcode_media")
+            )
+            if item:
+                print("[single_post] got item from ?__a=1 post URL", flush=True)
+                return item
+    except Exception as e:
+        print(f"[single_post] a1_post error: {e}", flush=True)
 
     if not username:
         try:
