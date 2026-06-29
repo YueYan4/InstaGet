@@ -748,7 +748,7 @@ def _fetch_og_meta(shortcode):
             kpos = uhtml.find(json_key)
             if kpos < 0:
                 continue
-            window = uhtml[max(0, kpos - 500):kpos + 60000]
+            window = uhtml[max(0, kpos - 500):kpos + 150000]
 
             # Extract current username from the JSON context
             um = re.search(r'"username"\s*:\s*"([A-Za-z0-9_.]+)"', window[:2000])
