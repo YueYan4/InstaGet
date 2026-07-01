@@ -608,42 +608,53 @@ _PLAIN_HEADERS = {
 }
 
 
+_BOT_HEADERS = {
+    "User-Agent": (
+        "facebookexternalhit/1.1 "
+        "(+http://www.facebook.com/externalhit_uatext.php)"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Accept-Encoding": "gzip, deflate",
+}
+
+
 def _fetch_og_meta(shortcode):
     """
     Fetch the post page as Facebook's link-preview crawler.
-    Uses allow_redirects=False so a redirect loop never raises TooManyRedirects.
-    Returns (username_or_None, og_image_url_or_None).
+    Tries /p/ first, then /reel/ (Reels don't serve OG metadata on the /p/ path).
+    Returns (current_username_or_None, og_image_url_or_None, bot_items_list).
     """
-    try:
-        r = req_lib.get(
-            f"https://www.instagram.com/p/{shortcode}/",
-            headers={
-                "User-Agent": (
-                    "facebookexternalhit/1.1 "
-                    "(+http://www.facebook.com/externalhit_uatext.php)"
-                ),
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5",
-                "Accept-Encoding": "gzip, deflate",
-            },
-            allow_redirects=False,
-            timeout=15,
-        )
-    except Exception as e:
-        print(f"[og_meta] request error: {e}", flush=True)
-        return None, None
+    html = None
+    for path in [f"/p/{shortcode}/", f"/reel/{shortcode}/"]:
+        try:
+            r = req_lib.get(
+                f"https://www.instagram.com{path}",
+                headers=_BOT_HEADERS,
+                allow_redirects=False,
+                timeout=15,
+            )
+        except Exception as e:
+            print(f"[og_meta] request error ({path}): {e}", flush=True)
+            continue
 
-    if r.status_code in (301, 302, 303, 307, 308):
-        loc = r.headers.get("Location", "?")
-        print(f"[og_meta] redirect {r.status_code} -> {loc[:120]}", flush=True)
-        return None, None
+        if r.status_code in (301, 302, 303, 307, 308):
+            loc = r.headers.get("Location", "?")
+            print(f"[og_meta] redirect {r.status_code} -> {loc[:80]} ({path})", flush=True)
+            continue
 
-    if not r.ok:
-        print(f"[og_meta] HTTP {r.status_code}", flush=True)
-        return None, None
+        if not r.ok:
+            print(f"[og_meta] HTTP {r.status_code} ({path})", flush=True)
+            continue
 
-    html = r.text
-    print(f"[og_meta] status={r.status_code} len={len(html)}", flush=True)
+        html = r.text
+        print(f"[og_meta] status={r.status_code} len={len(html)} path={path}", flush=True)
+        # Stop at the first path that returns something with recognisable post content
+        if f'"{shortcode}"' in html or "og:title" in html:
+            break
+
+    if html is None:
+        return None, None, []
 
     username = None
 
