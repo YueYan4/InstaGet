@@ -854,6 +854,23 @@ def _get_single_post_item(shortcode, session, hint_username=None):
     except Exception as e:
         print(f"[single_post] a1_post error: {e}", flush=True)
 
+    # media/info API: compute media_id from shortcode and fetch directly.
+    # Works for Reels and posts that the bot-UA path can't serve.
+    try:
+        media_id = shortcode_to_mediaid(shortcode)
+        ri = session.get(
+            f"https://www.instagram.com/api/v1/media/{media_id}/info/",
+            timeout=15,
+        )
+        print(f"[single_post] media_info_status={ri.status_code} len={len(ri.text)}", flush=True)
+        if ri.ok:
+            items = ri.json().get("items", [])
+            if items:
+                print("[single_post] got item from media/info API", flush=True)
+                return items[0]
+    except Exception as e:
+        print(f"[single_post] media_info error: {e}", flush=True)
+
     if not username:
         try:
             username, og_image_url, bot_items = _fetch_og_meta(shortcode)
