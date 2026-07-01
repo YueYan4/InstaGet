@@ -1027,8 +1027,9 @@ def _get_single_post_item(shortcode, session, hint_username=None):
         }
 
     raise Exception(
-        "Could not download this post from the server. "
-        "Try the profile URL (instagram.com/username/) instead."
+        "Instagram blocked every download attempt for this post from our server. "
+        "This happens with some Reels and accounts — our server's IP is rate-limited. "
+        "Nothing more can be done for this specific post from here."
     )
 
 
