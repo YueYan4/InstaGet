@@ -654,7 +654,8 @@ def _fetch_og_meta(shortcode):
             break
 
     if html is None:
-        return None, None, []
+        # If both paths redirected to login, signal IP-level rate limit to caller
+        return "__rate_limited__", None, []
 
     username = None
 
@@ -874,8 +875,15 @@ def _get_single_post_item(shortcode, session, hint_username=None):
     if not username:
         try:
             username, og_image_url, bot_items = _fetch_og_meta(shortcode)
+            if username == "__rate_limited__":
+                username = None
+                raise Exception(
+                    "Our server's IP is temporarily rate-limited by Instagram. "
+                    "Please wait a few hours and try again."
+                )
         except Exception as e:
             print(f"[og_meta] exception: {e}", flush=True)
+            raise
 
     # If the bot-UA HTML contained full-res CDN URLs, build a synthetic item
     # and return immediately — no need for user_id / feed search.
@@ -1027,9 +1035,9 @@ def _get_single_post_item(shortcode, session, hint_username=None):
         }
 
     raise Exception(
-        "Instagram blocked every download attempt for this post from our server. "
-        "This happens with some Reels and accounts — our server's IP is rate-limited. "
-        "Nothing more can be done for this specific post from here."
+        "Could not download this post — Instagram blocked all attempts from our server. "
+        "If this is a new problem, the server's IP may be temporarily rate-limited: "
+        "wait a few hours and try again."
     )
 
 
