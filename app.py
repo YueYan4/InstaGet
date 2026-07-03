@@ -13,9 +13,11 @@ from flask import Flask, render_template, request, jsonify, send_from_directory
 import instaloader
 
 app = Flask(__name__)
-DOWNLOAD_DIR = Path("downloads")
-DOWNLOAD_DIR.mkdir(exist_ok=True)
-SESSION_FILE = Path("session_config.json")
+DATA_DIR = Path(os.environ.get("DATA_DIR", "."))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+DOWNLOAD_DIR = DATA_DIR / "downloads"
+DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+SESSION_FILE = DATA_DIR / "session_config.json"
 MEDIA_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".m4v"}
 
 
