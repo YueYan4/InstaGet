@@ -556,6 +556,9 @@
       : '<span class="spinner"></span> Fetching media… this may take a moment.';
     showStatus(loadingMsg, "info");
 
+    const controller = new AbortController();
+    const fetchTimeout = setTimeout(() => controller.abort(), 110000);
+
     try {
       const body = { url };
       if (limit) body.limit = parseInt(limit);
@@ -564,7 +567,9 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+        signal: controller.signal,
       });
+      clearTimeout(fetchTimeout);
       const data = await res.json();
 
       if (!res.ok) {
@@ -598,7 +603,12 @@
       preloadAllBlobs(data.items);
 
     } catch (e) {
-      showStatus("&#x26A0; Network error. Is the server running?", "error");
+      clearTimeout(fetchTimeout);
+      if (e.name === 'AbortError') {
+        showStatus("&#x26A0; Request timed out after 90 seconds. Please try again.", "error");
+      } else {
+        showStatus("&#x26A0; Network error. Is the server running?", "error");
+      }
     } finally {
       btn.disabled = false;
     }
