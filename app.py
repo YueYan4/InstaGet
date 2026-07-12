@@ -784,7 +784,21 @@ def _fetch_og_meta(shortcode):
 
             _small = re.compile(r'/[sp]\d{1,3}x\d{1,3}/')
 
-            # XIG Polaris: "candidates":[  then first "url":"https://..." in next 2KB
+            # XIG Polaris video: "video_versions":[  — extract before candidates so
+            # reels return the actual mp4, not the thumbnail from image_versions2
+            for m2 in re.finditer(r'"video_versions"\s*:\s*\[', window):
+                rest = window[m2.end():m2.end() + 2000]
+                u_m = re.search(
+                    r'"url"\s*:\s*"(https://(?:scontent|cdninstagram)[^"]+\.mp4[^"]*)"',
+                    rest,
+                )
+                if u_m:
+                    u = u_m.group(1)
+                    if u not in seen_urls:
+                        seen_urls.add(u)
+                        bot_items.append(('mp4', u))
+
+            # XIG Polaris image: "candidates":[  then first "url":"https://..." in next 2KB
             for m2 in re.finditer(r'"candidates"\s*:\s*\[', window):
                 rest = window[m2.end():m2.end() + 2000]
                 u_m = re.search(
