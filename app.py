@@ -565,13 +565,17 @@ def _save_media_node(node, session, dest, prefix, idx):
     if mt == 2:  # video
         versions = node.get("video_versions", [])
         url = versions[0]["url"] if versions else None
-        ext = "mp4"
+        if url:
+            _save_url(session, url, dest / f"{prefix}_{idx:02d}.mp4")
+        candidates = node.get("image_versions2", {}).get("candidates", [])
+        thumb_url = candidates[0]["url"] if candidates else None
+        if thumb_url:
+            _save_url(session, thumb_url, dest / f"{prefix}_{idx:02d}_thumb.jpg")
     else:  # image
         candidates = node.get("image_versions2", {}).get("candidates", [])
         url = candidates[0]["url"] if candidates else None
-        ext = "jpg"
-    if url:
-        _save_url(session, url, dest / f"{prefix}_{idx:02d}.{ext}")
+        if url:
+            _save_url(session, url, dest / f"{prefix}_{idx:02d}.jpg")
 
 
 def _extract_post_media(obj, seen=None):
@@ -784,7 +788,23 @@ def _fetch_og_meta(shortcode):
 
             _small = re.compile(r'/[sp]\d{1,3}x\d{1,3}/')
 
-            # XIG Polaris: "candidates":[  then first "url":"https://..." in next 2KB
+            # XIG Polaris video: extract video_versions for video posts (media_type 2)
+            mt_m = re.search(r'"media_type"\s*:\s*(\d+)', window[:5000])
+            post_media_type = int(mt_m.group(1)) if mt_m else None
+            if post_media_type == 2:
+                for m2 in re.finditer(r'"video_versions"\s*:\s*\[', window):
+                    rest = window[m2.end():m2.end() + 2000]
+                    u_m = re.search(
+                        r'"url"\s*:\s*"(https://(?:scontent|cdninstagram)[^"]+\.mp4[^"]*)"',
+                        rest,
+                    )
+                    if u_m:
+                        u = u_m.group(1)
+                        if u not in seen_urls:
+                            seen_urls.add(u)
+                            bot_items.append(('mp4', u))
+
+            # XIG Polaris image: candidates (photo for image posts, thumbnail for videos)
             for m2 in re.finditer(r'"candidates"\s*:\s*\[', window):
                 rest = window[m2.end():m2.end() + 2000]
                 u_m = re.search(
