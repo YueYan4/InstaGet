@@ -762,7 +762,7 @@ def _fetch_og_meta(shortcode):
             kpos = uhtml.find(json_key)
             if kpos < 0:
                 continue
-            window = uhtml[max(0, kpos - 500):kpos + 150000]
+            window = uhtml[max(0, kpos - 500):kpos + 300000]
 
             # Extract current username from the JSON context
             um = re.search(r'"username"\s*:\s*"([A-Za-z0-9_.]+)"', window[:2000])
@@ -784,21 +784,7 @@ def _fetch_og_meta(shortcode):
 
             _small = re.compile(r'/[sp]\d{1,3}x\d{1,3}/')
 
-            # XIG Polaris video: "video_versions":[  — extract before candidates so
-            # reels return the actual mp4, not the thumbnail from image_versions2
-            for m2 in re.finditer(r'"video_versions"\s*:\s*\[', window):
-                rest = window[m2.end():m2.end() + 2000]
-                u_m = re.search(
-                    r'"url"\s*:\s*"(https://(?:scontent|cdninstagram)[^"]+\.mp4[^"]*)"',
-                    rest,
-                )
-                if u_m:
-                    u = u_m.group(1)
-                    if u not in seen_urls:
-                        seen_urls.add(u)
-                        bot_items.append(('mp4', u))
-
-            # XIG Polaris image: "candidates":[  then first "url":"https://..." in next 2KB
+            # XIG Polaris: "candidates":[  then first "url":"https://..." in next 2KB
             for m2 in re.finditer(r'"candidates"\s*:\s*\[', window):
                 rest = window[m2.end():m2.end() + 2000]
                 u_m = re.search(
@@ -1154,15 +1140,20 @@ def download_post_via_html(shortcode, session, dest_dir):
 
 
 def _load_session_rows():
-    sessionid = os.environ.get("INSTAGRAM_SESSION_ID", "").strip()
-    csrftoken  = os.environ.get("INSTAGRAM_CSRF_TOKEN",  "").strip()
-    if not sessionid and SESSION_FILE.exists():
+    # SESSION_FILE (updated via web UI) takes priority over env vars so that
+    # updating from the Setup panel takes effect immediately without SSH.
+    sessionid = ""
+    csrftoken  = ""
+    if SESSION_FILE.exists():
         try:
             cfg = json.loads(SESSION_FILE.read_text())
             sessionid = cfg.get("sessionid", "").strip()
             csrftoken  = cfg.get("csrftoken",  "").strip()
         except Exception:
             pass
+    if not sessionid:
+        sessionid = os.environ.get("INSTAGRAM_SESSION_ID", "").strip()
+        csrftoken  = os.environ.get("INSTAGRAM_CSRF_TOKEN",  "").strip()
     if not sessionid:
         raise Exception(
             "Instagram session not configured. Open ⚙ Setup and paste your sessionid."
