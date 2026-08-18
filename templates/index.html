@@ -1177,13 +1177,31 @@
     drawCleanCanvas();
   }
 
+  function shareOrDownload(blob, filename) {
+    const file = new File([blob], filename, { type: blob.type });
+    if (navigator.share && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
+      navigator.share({ files: [file], title: 'Save to Photos' })
+        .catch(e => {
+          if (e.name !== 'AbortError') _fallbackDownload(blob, filename);
+        });
+    } else {
+      _fallbackDownload(blob, filename);
+    }
+  }
+
+  function _fallbackDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = Object.assign(document.createElement('a'), { href: url, download: filename });
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 3000);
+  }
+
   function cropDownload() {
     if (!cleanImg) return;
     const srcY = Math.round(cleanTopFrac * cleanImg.naturalHeight);
     const srcH = Math.round((cleanBotFrac - cleanTopFrac) * cleanImg.naturalHeight);
     if (srcH <= 0) return;
     const IW = cleanImg.naturalWidth, IH = cleanImg.naturalHeight;
-    // Composite: image + paint strokes
     const full = document.createElement('canvas');
     full.width = IW; full.height = IH;
     const fctx = full.getContext('2d');
@@ -1196,12 +1214,7 @@
     const oc = document.createElement('canvas');
     oc.width = IW; oc.height = srcH;
     oc.getContext('2d').drawImage(full, 0, srcY, IW, srcH, 0, 0, IW, srcH);
-    oc.toBlob(blob => {
-      const url = URL.createObjectURL(blob);
-      const a = Object.assign(document.createElement('a'), { href: url, download: 'clean.jpg' });
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 3000);
-    }, 'image/jpeg', 0.95);
+    oc.toBlob(blob => shareOrDownload(blob, 'clean.jpg'), 'image/jpeg', 0.95);
   }
 
   function captureFrame() {
@@ -1210,12 +1223,7 @@
     const oc = document.createElement('canvas');
     oc.width = vid.videoWidth; oc.height = vid.videoHeight;
     oc.getContext('2d').drawImage(vid, 0, 0);
-    oc.toBlob(blob => {
-      const url = URL.createObjectURL(blob);
-      const a = Object.assign(document.createElement('a'), { href: url, download: 'frame.jpg' });
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 3000);
-    }, 'image/jpeg', 0.95);
+    oc.toBlob(blob => shareOrDownload(blob, 'frame.jpg'), 'image/jpeg', 0.95);
   }
 </script>
 </body>
