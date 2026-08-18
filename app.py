@@ -800,9 +800,26 @@ def _fetch_og_meta(shortcode):
             post_media_type = int(mt_m.group(1)) if mt_m else None
             n_vv_window = len(re.findall(r'"video_versions"', window))
             print(f"[og_meta] post_media_type={post_media_type} vv_in_window={n_vv_window}", flush=True)
-            if post_media_type == 2:
-                for m2 in re.finditer(r'"video_versions"\s*:\s*\[', window):
-                    rest = window[m2.end():m2.end() + 2000]
+            # Search video_versions unconditionally — carousels (media_type 8) can contain
+            # video children (media_type 2 inside carousel_media), so guarding on ==2 misses them.
+            # Image posts have no video_versions key so this is safe for all post types.
+            for m2 in re.finditer(r'"video_versions"\s*:\s*\[', window):
+                rest = window[m2.end():m2.end() + 2000]
+                u_m = re.search(
+                    r'"url"\s*:\s*"(https://(?:scontent|cdninstagram)[^"]+\.mp4[^"]*)"',
+                    rest,
+                )
+                if u_m:
+                    u = u_m.group(1)
+                    if u not in seen_urls:
+                        seen_urls.add(u)
+                        bot_items.append(('mp4', u))
+            # Fallback: video_versions might sit outside the 300KB window
+            if not any(ext == 'mp4' for ext, _ in bot_items) and post_media_type in (2, 8):
+                n_vv_html = len(re.findall(r'"video_versions"', uhtml))
+                print(f"[og_meta] no mp4 in window; full-html vv_hits={n_vv_html}", flush=True)
+                for m2 in re.finditer(r'"video_versions"\s*:\s*\[', uhtml):
+                    rest = uhtml[m2.end():m2.end() + 2000]
                     u_m = re.search(
                         r'"url"\s*:\s*"(https://(?:scontent|cdninstagram)[^"]+\.mp4[^"]*)"',
                         rest,
@@ -812,23 +829,8 @@ def _fetch_og_meta(shortcode):
                         if u not in seen_urls:
                             seen_urls.add(u)
                             bot_items.append(('mp4', u))
-                # video_versions might sit outside the 300KB window — scan full HTML
-                if not any(ext == 'mp4' for ext, _ in bot_items):
-                    n_vv_html = len(re.findall(r'"video_versions"', uhtml))
-                    print(f"[og_meta] no mp4 in window; full-html vv_hits={n_vv_html}", flush=True)
-                    for m2 in re.finditer(r'"video_versions"\s*:\s*\[', uhtml):
-                        rest = uhtml[m2.end():m2.end() + 2000]
-                        u_m = re.search(
-                            r'"url"\s*:\s*"(https://(?:scontent|cdninstagram)[^"]+\.mp4[^"]*)"',
-                            rest,
-                        )
-                        if u_m:
-                            u = u_m.group(1)
-                            if u not in seen_urls:
-                                seen_urls.add(u)
-                                bot_items.append(('mp4', u))
-                                print(f"[og_meta] found mp4 via full-html scan", flush=True)
-                                break
+                            print(f"[og_meta] found mp4 via full-html scan", flush=True)
+                            break
 
             # XIG Polaris image: candidates (photo for image posts, thumbnail for videos)
             for m2 in re.finditer(r'"candidates"\s*:\s*\[', window):
