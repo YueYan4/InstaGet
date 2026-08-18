@@ -710,12 +710,13 @@
   }
 
   function shareTasks(tasks) {
-    if (!navigator.share || !navigator.canShare) {
-      showStatus("&#x26A0; Share API not available. Hold each photo to save individually.", "error");
+    if (!navigator.share) {
+      showStatus("&#x26A0; Share API not available. Hold each photo to save, or tap OPEN on each video.", "error");
       return;
     }
     const files = tasks.map(t => t.file);
-    if (navigator.canShare({ files })) {
+    // navigator.canShare was added in iOS 14.5 — guard before calling it
+    if (!navigator.canShare || navigator.canShare({ files })) {
       navigator.share({ files, title: "Save to Photos" })
         .then(() => tasks.forEach(t => markSaved(t.index)))
         .catch(e => { if (e.name !== "AbortError") shareSerial(tasks, 0); });
@@ -727,7 +728,7 @@
   function shareSerial(tasks, pos) {
     if (pos >= tasks.length) { showStatus("&#x2713; All done!", "success"); return; }
     const { file, index } = tasks[pos];
-    if (!navigator.canShare({ files: [file] })) { shareSerial(tasks, pos + 1); return; }
+    if (navigator.canShare && !navigator.canShare({ files: [file] })) { shareSerial(tasks, pos + 1); return; }
     showStatus(`Saving ${pos + 1} of ${tasks.length}… tap "Save" in the sheet.`, "info");
     navigator.share({ files: [file] })
       .then(() => { markSaved(index); shareSerial(tasks, pos + 1); })
