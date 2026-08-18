@@ -349,6 +349,23 @@
     }
     .clean-drop.drag-over { border-color: #dc2743; color: var(--text); }
     #clean-canvas { display: block; border-radius: 10px; touch-action: none; }
+
+    .tool-btn {
+      flex: 0 0 auto;
+      padding: 7px 11px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-dim);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      margin: 0; width: auto;
+      -webkit-tap-highlight-color: transparent;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .tool-btn.tool-active { background: var(--surface); color: var(--text); border-color: #dc2743; }
+    .tool-btn:active { opacity: 0.7; }
   </style>
 </head>
 <body>
@@ -453,10 +470,37 @@
     <div id="clean-img-ui" style="display:none">
       <canvas id="clean-canvas"></canvas>
       <div id="clean-crop-info" style="text-align:center;font-size:12px;color:var(--text-dim);margin:5px 0 9px"></div>
-      <div style="display:flex;gap:8px">
-        <button style="flex:1;margin:0;font-size:14px;padding:11px" onclick="autoDetectClean()">Auto Detect</button>
-        <button style="flex:1;margin:0;font-size:14px;padding:11px" onclick="cropDownload()">⬇ Download</button>
+
+      <!-- Tool row -->
+      <div style="display:flex;gap:6px;margin-bottom:9px;align-items:center">
+        <button id="tool-crop-btn" class="tool-btn tool-active" onclick="setCleanTool('crop')">✂️ Crop</button>
+        <button id="tool-paint-btn" class="tool-btn" onclick="setCleanTool('paint')">🖌 Paint</button>
+        <button id="tool-eyedrop-btn" class="tool-btn" onclick="setCleanTool('eyedrop')">💧 Sample</button>
+        <div style="flex:1"></div>
+        <button onclick="undoPaint()" title="Undo last stroke" style="padding:7px 12px;margin:0;background:var(--surface2);color:var(--text-dim);border:1px solid var(--border);border-radius:8px;cursor:pointer;font-size:16px;-webkit-tap-highlight-color:transparent">↩</button>
       </div>
+
+      <!-- Crop options -->
+      <div id="clean-crop-opts" style="display:flex;gap:8px;margin-bottom:9px">
+        <button style="flex:1;margin:0;font-size:14px;padding:10px" onclick="autoDetectClean()">Auto Detect Bars</button>
+      </div>
+
+      <!-- Paint options -->
+      <div id="clean-paint-opts" style="display:none;align-items:center;gap:8px;margin-bottom:9px;flex-wrap:wrap">
+        <div id="brush-color-swatch" onclick="document.getElementById('brush-color-input').click()"
+          style="width:30px;height:30px;border-radius:6px;border:2px solid var(--border);cursor:pointer;flex-shrink:0;background:#cccccc"></div>
+        <input type="color" id="brush-color-input" value="#cccccc" style="display:none">
+        <span style="font-size:13px;color:var(--text-dim)">Size</span>
+        <input type="range" id="brush-size-input" min="5" max="120" value="30" style="flex:1;min-width:60px">
+        <span id="brush-size-label" style="font-size:12px;color:var(--text-dim);min-width:34px;text-align:right">30px</span>
+      </div>
+
+      <!-- Eyedrop hint -->
+      <div id="clean-eyedrop-hint" style="display:none;margin-bottom:9px;font-size:13px;color:var(--text-dim);text-align:center;padding:8px;background:var(--surface2);border-radius:8px">
+        Tap anywhere on the image to sample that color, then paint over the icon
+      </div>
+
+      <button style="width:100%;margin:0;font-size:15px;padding:13px" onclick="cropDownload()">⬇ Download Clean</button>
       <button onclick="resetClean()" style="margin-top:8px;background:var(--surface2);color:var(--text-dim);border:1px solid var(--border)">✕ Clear</button>
     </div>
     <div id="clean-vid-ui" style="display:none">
@@ -881,6 +925,13 @@
   let cleanBotFrac = 1;
   let cleanDrag = null;
   let cleanCanvasH = 0;
+  let cleanTool = 'crop';
+  let cleanBrushColor = '#cccccc';
+  let cleanBrushSize = 30;
+  let cleanPainting = false;
+  let cleanPaintStrokes = [];  // {fx,fy,fr,color} — fractions of image width/height
+  let cleanPaintGroups = [];   // counts for undo (strokes per drag gesture)
+  let cleanCurrentGroupCount = 0;
 
   (function setupCleanTab() {
     document.getElementById('clean-file-input').addEventListener('change', e => {
@@ -907,9 +958,34 @@
       }
     });
 
+    const brushColorInput = document.getElementById('brush-color-input');
+    const brushColorSwatch = document.getElementById('brush-color-swatch');
+    brushColorInput.addEventListener('input', e => {
+      cleanBrushColor = e.target.value;
+      brushColorSwatch.style.background = e.target.value;
+    });
+    const brushSizeInput = document.getElementById('brush-size-input');
+    brushSizeInput.addEventListener('input', e => {
+      cleanBrushSize = parseInt(e.target.value);
+      document.getElementById('brush-size-label').textContent = cleanBrushSize + 'px';
+    });
+
     const canvas = document.getElementById('clean-canvas');
     canvas.addEventListener('pointerdown', e => {
       if (!cleanImg) return;
+
+      if (cleanTool === 'eyedrop') { sampleColor(e); return; }
+
+      if (cleanTool === 'paint') {
+        e.preventDefault();
+        canvas.setPointerCapture(e.pointerId);
+        cleanPainting = true;
+        cleanCurrentGroupCount = 0;
+        addPaintStroke(e);
+        return;
+      }
+
+      // crop mode
       const rect = canvas.getBoundingClientRect();
       const y = ((e.clientY - rect.top) / rect.height) * cleanCanvasH;
       const GRAB = 22;
@@ -919,15 +995,22 @@
         cleanDrag = 'bot'; canvas.setPointerCapture(e.pointerId); e.preventDefault();
       }
     });
+
     canvas.addEventListener('pointermove', e => {
+      if (cleanTool === 'paint') {
+        if (cleanPainting) { addPaintStroke(e); e.preventDefault(); }
+        return;
+      }
       const rect = canvas.getBoundingClientRect();
       const y = ((e.clientY - rect.top) / rect.height) * cleanCanvasH;
       if (!cleanDrag) {
-        const GRAB = 22;
-        canvas.style.cursor =
-          (Math.abs(y - cleanTopFrac * cleanCanvasH) <= GRAB ||
-           Math.abs(y - cleanBotFrac * cleanCanvasH) <= GRAB)
-          ? 'ns-resize' : 'default';
+        if (cleanTool === 'crop') {
+          const GRAB = 22;
+          canvas.style.cursor =
+            (Math.abs(y - cleanTopFrac * cleanCanvasH) <= GRAB ||
+             Math.abs(y - cleanBotFrac * cleanCanvasH) <= GRAB)
+            ? 'ns-resize' : 'default';
+        }
         return;
       }
       e.preventDefault();
@@ -936,17 +1019,76 @@
       else cleanBotFrac = Math.max(frac, cleanTopFrac + 0.02);
       drawCleanCanvas();
     });
-    canvas.addEventListener('pointerup',     () => { cleanDrag = null; });
-    canvas.addEventListener('pointercancel', () => { cleanDrag = null; });
+
+    canvas.addEventListener('pointerup', () => {
+      if (cleanTool === 'paint' && cleanPainting) {
+        if (cleanCurrentGroupCount > 0) cleanPaintGroups.push(cleanCurrentGroupCount);
+        cleanPainting = false;
+      }
+      cleanDrag = null;
+    });
+    canvas.addEventListener('pointercancel', () => { cleanDrag = null; cleanPainting = false; });
   })();
+
+  function setCleanTool(tool) {
+    cleanTool = tool;
+    document.getElementById('tool-crop-btn').classList.toggle('tool-active', tool === 'crop');
+    document.getElementById('tool-paint-btn').classList.toggle('tool-active', tool === 'paint');
+    document.getElementById('tool-eyedrop-btn').classList.toggle('tool-active', tool === 'eyedrop');
+    document.getElementById('clean-crop-opts').style.display = tool === 'crop' ? 'flex' : 'none';
+    document.getElementById('clean-paint-opts').style.display = tool === 'paint' ? 'flex' : 'none';
+    document.getElementById('clean-eyedrop-hint').style.display = tool === 'eyedrop' ? '' : 'none';
+    const canvas = document.getElementById('clean-canvas');
+    canvas.style.cursor = tool === 'paint' ? 'crosshair' : tool === 'eyedrop' ? 'cell' : 'default';
+  }
+
+  function addPaintStroke(e) {
+    const canvas = document.getElementById('clean-canvas');
+    const rect = canvas.getBoundingClientRect();
+    const fx = (e.clientX - rect.left) / rect.width;
+    const fy = (e.clientY - rect.top) / rect.height;
+    const fr = cleanBrushSize / cleanImg.naturalWidth;
+    cleanPaintStrokes.push({ fx, fy, fr, color: cleanBrushColor });
+    cleanCurrentGroupCount++;
+    drawCleanCanvas();
+  }
+
+  function sampleColor(e) {
+    const canvas = document.getElementById('clean-canvas');
+    const rect = canvas.getBoundingClientRect();
+    const ix = Math.round(Math.max(0, (e.clientX - rect.left) / rect.width) * (cleanImg.naturalWidth - 1));
+    const iy = Math.round(Math.max(0, (e.clientY - rect.top) / rect.height) * (cleanImg.naturalHeight - 1));
+    const oc = document.createElement('canvas');
+    oc.width = cleanImg.naturalWidth; oc.height = cleanImg.naturalHeight;
+    const ctx = oc.getContext('2d');
+    ctx.drawImage(cleanImg, 0, 0);
+    for (const s of cleanPaintStrokes) {
+      ctx.beginPath(); ctx.arc(s.fx * oc.width, s.fy * oc.height, s.fr * oc.width, 0, Math.PI * 2);
+      ctx.fillStyle = s.color; ctx.fill();
+    }
+    const p = ctx.getImageData(ix, iy, 1, 1).data;
+    cleanBrushColor = '#' + [p[0],p[1],p[2]].map(v => v.toString(16).padStart(2,'0')).join('');
+    document.getElementById('brush-color-swatch').style.background = cleanBrushColor;
+    document.getElementById('brush-color-input').value = cleanBrushColor;
+    setCleanTool('paint');
+  }
+
+  function undoPaint() {
+    if (!cleanPaintGroups.length) return;
+    const count = cleanPaintGroups.pop();
+    cleanPaintStrokes.splice(cleanPaintStrokes.length - count, count);
+    drawCleanCanvas();
+  }
 
   function resetClean() {
     cleanImg = null; cleanTopFrac = 0; cleanBotFrac = 1; cleanDrag = null;
+    cleanPaintStrokes = []; cleanPaintGroups = []; cleanPainting = false;
     document.getElementById('clean-drop').style.display = '';
     document.getElementById('clean-img-ui').style.display = 'none';
     document.getElementById('clean-vid-ui').style.display = 'none';
     const vid = document.getElementById('clean-video');
     vid.pause(); vid.src = '';
+    setCleanTool('crop');
   }
 
   function cleanFileChosen(file) {
@@ -961,6 +1103,7 @@
       img.onload = () => {
         cleanImg = img;
         cleanTopFrac = 0; cleanBotFrac = 1;
+        cleanPaintStrokes = []; cleanPaintGroups = [];
         document.getElementById('clean-drop').style.display = 'none';
         document.getElementById('clean-img-ui').style.display = '';
         document.getElementById('clean-vid-ui').style.display = 'none';
@@ -981,17 +1124,23 @@
     const ctx = canvas.getContext('2d');
     ctx.drawImage(cleanImg, 0, 0, W, H);
 
+    // Paint strokes
+    for (const s of cleanPaintStrokes) {
+      ctx.beginPath();
+      ctx.arc(s.fx * W, s.fy * H, s.fr * W, 0, Math.PI * 2);
+      ctx.fillStyle = s.color;
+      ctx.fill();
+    }
+
+    // Crop overlay
     const topY = Math.round(cleanTopFrac * H);
     const botY = Math.round(cleanBotFrac * H);
-
     ctx.fillStyle = 'rgba(0,0,0,0.55)';
     if (topY > 0) ctx.fillRect(0, 0, W, topY);
     if (botY < H) ctx.fillRect(0, botY, W, H - botY);
-
     ctx.strokeStyle = '#dc2743'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(0, topY); ctx.lineTo(W, topY); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(0, botY); ctx.lineTo(W, botY); ctx.stroke();
-
     ctx.fillStyle = '#dc2743';
     ctx.fillRect(W / 2 - 24, topY - 5, 48, 10);
     ctx.fillRect(W / 2 - 24, botY - 5, 48, 10);
@@ -999,7 +1148,7 @@
     document.getElementById('clean-crop-info').textContent =
       cleanImg.naturalWidth + ' × ' +
       Math.round((cleanBotFrac - cleanTopFrac) * cleanImg.naturalHeight) +
-      'px · drag lines to adjust';
+      'px';
   }
 
   function autoDetectClean() {
@@ -1033,9 +1182,20 @@
     const srcY = Math.round(cleanTopFrac * cleanImg.naturalHeight);
     const srcH = Math.round((cleanBotFrac - cleanTopFrac) * cleanImg.naturalHeight);
     if (srcH <= 0) return;
+    const IW = cleanImg.naturalWidth, IH = cleanImg.naturalHeight;
+    // Composite: image + paint strokes
+    const full = document.createElement('canvas');
+    full.width = IW; full.height = IH;
+    const fctx = full.getContext('2d');
+    fctx.drawImage(cleanImg, 0, 0);
+    for (const s of cleanPaintStrokes) {
+      fctx.beginPath();
+      fctx.arc(s.fx * IW, s.fy * IH, s.fr * IW, 0, Math.PI * 2);
+      fctx.fillStyle = s.color; fctx.fill();
+    }
     const oc = document.createElement('canvas');
-    oc.width = cleanImg.naturalWidth; oc.height = srcH;
-    oc.getContext('2d').drawImage(cleanImg, 0, srcY, cleanImg.naturalWidth, srcH, 0, 0, cleanImg.naturalWidth, srcH);
+    oc.width = IW; oc.height = srcH;
+    oc.getContext('2d').drawImage(full, 0, srcY, IW, srcH, 0, 0, IW, srcH);
     oc.toBlob(blob => {
       const url = URL.createObjectURL(blob);
       const a = Object.assign(document.createElement('a'), { href: url, download: 'clean.jpg' });
