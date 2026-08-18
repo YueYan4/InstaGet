@@ -793,11 +793,13 @@ def _fetch_og_meta(shortcode):
 
             _small = re.compile(r'/[sp]\d{1,3}x\d{1,3}/')
 
-            # XIG Polaris video: extract video_versions for video posts (media_type 2).
-            # Search up to 5000 chars after the shortcode position; the full lookback
-            # window already covers chars before the shortcode where media_type lives.
-            mt_m = re.search(r'"media_type"\s*:\s*(\d+)', window[:_lookback + 5000])
+            # media_type appears before "code" in the JSON node — can be 50KB+ earlier.
+            # Search directly in uhtml rather than the window.
+            _mt_start = max(0, kpos - 50000)
+            mt_m = re.search(r'"media_type"\s*:\s*(\d+)', uhtml[_mt_start:kpos + 5000])
             post_media_type = int(mt_m.group(1)) if mt_m else None
+            n_vv_window = len(re.findall(r'"video_versions"', window))
+            print(f"[og_meta] post_media_type={post_media_type} vv_in_window={n_vv_window}", flush=True)
             if post_media_type == 2:
                 for m2 in re.finditer(r'"video_versions"\s*:\s*\[', window):
                     rest = window[m2.end():m2.end() + 2000]
@@ -810,6 +812,23 @@ def _fetch_og_meta(shortcode):
                         if u not in seen_urls:
                             seen_urls.add(u)
                             bot_items.append(('mp4', u))
+                # video_versions might sit outside the 300KB window — scan full HTML
+                if not any(ext == 'mp4' for ext, _ in bot_items):
+                    n_vv_html = len(re.findall(r'"video_versions"', uhtml))
+                    print(f"[og_meta] no mp4 in window; full-html vv_hits={n_vv_html}", flush=True)
+                    for m2 in re.finditer(r'"video_versions"\s*:\s*\[', uhtml):
+                        rest = uhtml[m2.end():m2.end() + 2000]
+                        u_m = re.search(
+                            r'"url"\s*:\s*"(https://(?:scontent|cdninstagram)[^"]+\.mp4[^"]*)"',
+                            rest,
+                        )
+                        if u_m:
+                            u = u_m.group(1)
+                            if u not in seen_urls:
+                                seen_urls.add(u)
+                                bot_items.append(('mp4', u))
+                                print(f"[og_meta] found mp4 via full-html scan", flush=True)
+                                break
 
             # XIG Polaris image: candidates (photo for image posts, thumbnail for videos)
             for m2 in re.finditer(r'"candidates"\s*:\s*\[', window):
