@@ -766,10 +766,15 @@ def _fetch_og_meta(shortcode):
             kpos = uhtml.find(json_key)
             if kpos < 0:
                 continue
-            window = uhtml[max(0, kpos - 500):kpos + 300000]
+            # Look back 20000 chars so we capture fields like media_type that appear
+            # before "code" in the same JSON object (media_type is near the TOP of
+            # an Instagram media node, while "code" can be thousands of chars later).
+            _lookback = min(20000, kpos)
+            window = uhtml[kpos - _lookback:kpos + 300000]
 
-            # Extract current username from the JSON context
-            um = re.search(r'"username"\s*:\s*"([A-Za-z0-9_.]+)"', window[:2000])
+            # Extract current username from the JSON context (near the shortcode)
+            um = re.search(r'"username"\s*:\s*"([A-Za-z0-9_.]+)"',
+                           window[_lookback:_lookback + 2000])
             if um and um.group(1) != current_username:
                 current_username = um.group(1)
                 print(f"[og_meta] current_username={current_username} (og had {username!r})", flush=True)
@@ -788,8 +793,10 @@ def _fetch_og_meta(shortcode):
 
             _small = re.compile(r'/[sp]\d{1,3}x\d{1,3}/')
 
-            # XIG Polaris video: extract video_versions for video posts (media_type 2)
-            mt_m = re.search(r'"media_type"\s*:\s*(\d+)', window[:50000])
+            # XIG Polaris video: extract video_versions for video posts (media_type 2).
+            # Search up to 5000 chars after the shortcode position; the full lookback
+            # window already covers chars before the shortcode where media_type lives.
+            mt_m = re.search(r'"media_type"\s*:\s*(\d+)', window[:_lookback + 5000])
             post_media_type = int(mt_m.group(1)) if mt_m else None
             if post_media_type == 2:
                 for m2 in re.finditer(r'"video_versions"\s*:\s*\[', window):
@@ -1101,8 +1108,12 @@ def _scrape_urls_from_html(html):
             seen.add(u)
             urls.append(('jpg', u))
 
-    # 4. <video src>
+    # 4. <video src> and <source src> (embed pages use <source> inside <video>)
     for u in re.findall(r'<video[^>]+\bsrc="(https://[^"]+)"', html):
+        if u not in seen:
+            seen.add(u)
+            urls.append(('mp4', u))
+    for u in re.findall(r'<source[^>]+\bsrc="(https://[^"]+)"', html):
         if u not in seen:
             seen.add(u)
             urls.append(('mp4', u))
@@ -1115,24 +1126,27 @@ def download_post_via_html(shortcode, session, dest_dir):
     errors = []
 
     # Strategy 1: embed page — no auth needed, designed for external embedding
-    try:
-        r = req_lib.get(
-            f"https://www.instagram.com/p/{shortcode}/embed/captioned/",
-            headers={**_PLAIN_HEADERS,
-                     "Accept": "text/html,application/xhtml+xml,*/*"},
-            timeout=30,
-        )
-        if r.ok:
-            urls = _scrape_urls_from_html(r.text)
-            if urls:
-                for i, (ext, url) in enumerate(urls):
-                    _save_url_plain(url, dest_dir / f"{shortcode}_{i:02d}.{ext}")
-                return
-            errors.append("embed: no media URLs in JSON blobs")
-        else:
-            errors.append(f"embed: HTTP {r.status_code}")
-    except Exception as e:
-        errors.append(f"embed: {e}")
+    for embed_path in [f"/p/{shortcode}/embed/captioned/", f"/reel/{shortcode}/embed/captioned/"]:
+        try:
+            r = req_lib.get(
+                f"https://www.instagram.com{embed_path}",
+                headers={**_PLAIN_HEADERS,
+                         "Accept": "text/html,application/xhtml+xml,*/*"},
+                timeout=30,
+            )
+            print(f"[embed] {embed_path} status={r.status_code} len={len(r.text)} "
+                  f"snippet={r.text[:150]!r}", flush=True)
+            if r.ok:
+                urls = _scrape_urls_from_html(r.text)
+                if urls:
+                    for i, (ext, url) in enumerate(urls):
+                        _save_url_plain(url, dest_dir / f"{shortcode}_{i:02d}.{ext}")
+                    return
+                errors.append(f"embed {embed_path}: no media URLs found")
+            else:
+                errors.append(f"embed {embed_path}: HTTP {r.status_code}")
+        except Exception as e:
+            errors.append(f"embed {embed_path}: {e}")
 
     # Strategy 2: ?__a=1 JSON endpoint without session (cookies cause redirect loops)
     try:
