@@ -789,7 +789,7 @@ def _fetch_og_meta(shortcode):
             _small = re.compile(r'/[sp]\d{1,3}x\d{1,3}/')
 
             # XIG Polaris video: extract video_versions for video posts (media_type 2)
-            mt_m = re.search(r'"media_type"\s*:\s*(\d+)', window[:5000])
+            mt_m = re.search(r'"media_type"\s*:\s*(\d+)', window[:50000])
             post_media_type = int(mt_m.group(1)) if mt_m else None
             if post_media_type == 2:
                 for m2 in re.finditer(r'"video_versions"\s*:\s*\[', window):
@@ -1262,9 +1262,14 @@ def fetch_media():
                     _save_media_node(item, browser, session_dir, code, 0)
                 time.sleep(random.uniform(1, 3))
             except Exception as e:
-                msg = f"{code}: {e}"
-                print(f"Skipping {msg}", flush=True)
-                download_errors.append(msg)
+                # Fallback: embed endpoint works for public posts where bot UA is restricted
+                try:
+                    print(f"[download] {code} fallback → embed endpoint", flush=True)
+                    download_post_via_html(code, browser, session_dir)
+                except Exception as e2:
+                    msg = f"{code}: {e}"
+                    print(f"Skipping {msg}", flush=True)
+                    download_errors.append(msg)
 
         media_files = sorted([
             f for f in session_dir.rglob("*")
