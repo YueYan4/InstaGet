@@ -711,7 +711,17 @@
 
   function shareTasks(tasks) {
     if (!navigator.share) {
-      showStatus("&#x26A0; Share API not available. Hold each photo to save, or tap OPEN on each video.", "error");
+      // Desktop: no Share API — trigger browser downloads directly
+      tasks.forEach(({ file, index }) => {
+        const url = URL.createObjectURL(file);
+        const a = Object.assign(document.createElement("a"), { href: url, download: file.name });
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+        markSaved(index);
+      });
+      showStatus("&#x2713; Downloads started!", "success");
       return;
     }
     const files = tasks.map(t => t.file);
