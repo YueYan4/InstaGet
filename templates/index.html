@@ -335,6 +335,20 @@
       pointer-events: none;
     }
     .save-indicator.show { display: flex; }
+
+    .clean-drop {
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 32px 16px;
+      text-align: center;
+      cursor: pointer;
+      color: var(--text-dim);
+      font-size: 15px;
+      margin-bottom: 4px;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .clean-drop.drag-over { border-color: #dc2743; color: var(--text); }
+    #clean-canvas { display: block; border-radius: 10px; touch-action: none; }
   </style>
 </head>
 <body>
@@ -383,6 +397,7 @@
   <div class="mode-tabs">
     <button class="tab active" id="tab-post" onclick="setMode('post')">Post / Reel</button>
     <button class="tab" id="tab-profile" onclick="setMode('profile')">Profile</button>
+    <button class="tab" id="tab-clean" onclick="setMode('clean')">Clean</button>
   </div>
 
   <!-- Post / Reel mode -->
@@ -424,6 +439,30 @@
     <div style="margin-top:10px">
       <label for="limit-input">Posts to download <span style="font-weight:400;text-transform:none;letter-spacing:0">(newest first)</span></label>
       <input type="number" id="limit-input" placeholder="12" value="12" min="1" max="500" />
+    </div>
+  </div>
+
+  <!-- Clean mode -->
+  <div id="clean-section" style="display:none">
+    <div id="clean-drop" class="clean-drop" onclick="document.getElementById('clean-file-input').click()">
+      <div style="font-size:28px;margin-bottom:8px">✂️</div>
+      <div>Tap to pick an image or video</div>
+      <div style="font-size:12px;margin-top:4px">or paste a screenshot (⌘V / Ctrl+V)</div>
+      <input id="clean-file-input" type="file" accept="image/*,video/*" style="display:none">
+    </div>
+    <div id="clean-img-ui" style="display:none">
+      <canvas id="clean-canvas"></canvas>
+      <div id="clean-crop-info" style="text-align:center;font-size:12px;color:var(--text-dim);margin:5px 0 9px"></div>
+      <div style="display:flex;gap:8px">
+        <button style="flex:1;margin:0;font-size:14px;padding:11px" onclick="autoDetectClean()">Auto Detect</button>
+        <button style="flex:1;margin:0;font-size:14px;padding:11px" onclick="cropDownload()">⬇ Download</button>
+      </div>
+      <button onclick="resetClean()" style="margin-top:8px;background:var(--surface2);color:var(--text-dim);border:1px solid var(--border)">✕ Clear</button>
+    </div>
+    <div id="clean-vid-ui" style="display:none">
+      <video id="clean-video" controls playsinline style="width:100%;border-radius:10px;max-height:55vh;display:block"></video>
+      <button onclick="captureFrame()" style="margin-top:12px">📸 Capture Frame as Photo</button>
+      <button onclick="resetClean()" style="margin-top:8px;background:var(--surface2);color:var(--text-dim);border:1px solid var(--border)">✕ Clear</button>
     </div>
   </div>
 
@@ -511,12 +550,19 @@
     currentMode = mode;
     document.getElementById('post-section').style.display    = mode === 'post'    ? '' : 'none';
     document.getElementById('profile-section').style.display = mode === 'profile' ? '' : 'none';
+    document.getElementById('clean-section').style.display   = mode === 'clean'   ? '' : 'none';
     document.getElementById('tab-post').classList.toggle('active',    mode === 'post');
     document.getElementById('tab-profile').classList.toggle('active', mode === 'profile');
-    document.getElementById('mode-hint').textContent =
-      mode === 'profile'
-        ? 'Downloads the most recent posts from a public profile.'
-        : 'Must be logged into Instagram in Firefox on this computer.';
+    document.getElementById('tab-clean').classList.toggle('active',   mode === 'clean');
+    const isClean = mode === 'clean';
+    document.getElementById('fetch-btn').style.display  = isClean ? 'none' : '';
+    document.getElementById('mode-hint').style.display  = isClean ? 'none' : '';
+    if (!isClean) {
+      document.getElementById('mode-hint').textContent =
+        mode === 'profile'
+          ? 'Downloads the most recent posts from a public profile.'
+          : 'Must be logged into Instagram in Firefox on this computer.';
+    }
     hideStatus();
     document.getElementById('results').style.display = 'none';
   }
@@ -828,6 +874,189 @@
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") tryPasteFromClipboard();
   });
+
+  // ── Clean Tab ─────────────────────────────────────────────────────────
+  let cleanImg = null;
+  let cleanTopFrac = 0;
+  let cleanBotFrac = 1;
+  let cleanDrag = null;
+  let cleanCanvasH = 0;
+
+  (function setupCleanTab() {
+    document.getElementById('clean-file-input').addEventListener('change', e => {
+      cleanFileChosen(e.target.files[0]);
+      e.target.value = '';
+    });
+
+    const drop = document.getElementById('clean-drop');
+    drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag-over'); });
+    drop.addEventListener('dragleave', () => drop.classList.remove('drag-over'));
+    drop.addEventListener('drop', e => {
+      e.preventDefault();
+      drop.classList.remove('drag-over');
+      cleanFileChosen(e.dataTransfer?.files[0]);
+    });
+
+    document.addEventListener('paste', e => {
+      if (currentMode !== 'clean') return;
+      for (const item of e.clipboardData?.items || []) {
+        if (item.kind === 'file' && item.type.startsWith('image/')) {
+          cleanFileChosen(item.getAsFile());
+          break;
+        }
+      }
+    });
+
+    const canvas = document.getElementById('clean-canvas');
+    canvas.addEventListener('pointerdown', e => {
+      if (!cleanImg) return;
+      const rect = canvas.getBoundingClientRect();
+      const y = ((e.clientY - rect.top) / rect.height) * cleanCanvasH;
+      const GRAB = 22;
+      if (Math.abs(y - cleanTopFrac * cleanCanvasH) <= GRAB) {
+        cleanDrag = 'top'; canvas.setPointerCapture(e.pointerId); e.preventDefault();
+      } else if (Math.abs(y - cleanBotFrac * cleanCanvasH) <= GRAB) {
+        cleanDrag = 'bot'; canvas.setPointerCapture(e.pointerId); e.preventDefault();
+      }
+    });
+    canvas.addEventListener('pointermove', e => {
+      const rect = canvas.getBoundingClientRect();
+      const y = ((e.clientY - rect.top) / rect.height) * cleanCanvasH;
+      if (!cleanDrag) {
+        const GRAB = 22;
+        canvas.style.cursor =
+          (Math.abs(y - cleanTopFrac * cleanCanvasH) <= GRAB ||
+           Math.abs(y - cleanBotFrac * cleanCanvasH) <= GRAB)
+          ? 'ns-resize' : 'default';
+        return;
+      }
+      e.preventDefault();
+      const frac = Math.max(0, Math.min(1, y / cleanCanvasH));
+      if (cleanDrag === 'top') cleanTopFrac = Math.min(frac, cleanBotFrac - 0.02);
+      else cleanBotFrac = Math.max(frac, cleanTopFrac + 0.02);
+      drawCleanCanvas();
+    });
+    canvas.addEventListener('pointerup',     () => { cleanDrag = null; });
+    canvas.addEventListener('pointercancel', () => { cleanDrag = null; });
+  })();
+
+  function resetClean() {
+    cleanImg = null; cleanTopFrac = 0; cleanBotFrac = 1; cleanDrag = null;
+    document.getElementById('clean-drop').style.display = '';
+    document.getElementById('clean-img-ui').style.display = 'none';
+    document.getElementById('clean-vid-ui').style.display = 'none';
+    const vid = document.getElementById('clean-video');
+    vid.pause(); vid.src = '';
+  }
+
+  function cleanFileChosen(file) {
+    if (!file) return;
+    if (file.type.startsWith('video/')) {
+      document.getElementById('clean-drop').style.display = 'none';
+      document.getElementById('clean-img-ui').style.display = 'none';
+      document.getElementById('clean-vid-ui').style.display = '';
+      document.getElementById('clean-video').src = URL.createObjectURL(file);
+    } else {
+      const img = new Image();
+      img.onload = () => {
+        cleanImg = img;
+        cleanTopFrac = 0; cleanBotFrac = 1;
+        document.getElementById('clean-drop').style.display = 'none';
+        document.getElementById('clean-img-ui').style.display = '';
+        document.getElementById('clean-vid-ui').style.display = 'none';
+        requestAnimationFrame(drawCleanCanvas);
+      };
+      img.src = URL.createObjectURL(file);
+    }
+  }
+
+  function drawCleanCanvas() {
+    if (!cleanImg) return;
+    const canvas = document.getElementById('clean-canvas');
+    const W = canvas.parentElement.clientWidth;
+    if (!W) { requestAnimationFrame(drawCleanCanvas); return; }
+    const H = Math.round(W * cleanImg.naturalHeight / cleanImg.naturalWidth);
+    canvas.width = W; canvas.height = H; cleanCanvasH = H;
+
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(cleanImg, 0, 0, W, H);
+
+    const topY = Math.round(cleanTopFrac * H);
+    const botY = Math.round(cleanBotFrac * H);
+
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    if (topY > 0) ctx.fillRect(0, 0, W, topY);
+    if (botY < H) ctx.fillRect(0, botY, W, H - botY);
+
+    ctx.strokeStyle = '#dc2743'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, topY); ctx.lineTo(W, topY); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, botY); ctx.lineTo(W, botY); ctx.stroke();
+
+    ctx.fillStyle = '#dc2743';
+    ctx.fillRect(W / 2 - 24, topY - 5, 48, 10);
+    ctx.fillRect(W / 2 - 24, botY - 5, 48, 10);
+
+    document.getElementById('clean-crop-info').textContent =
+      cleanImg.naturalWidth + ' × ' +
+      Math.round((cleanBotFrac - cleanTopFrac) * cleanImg.naturalHeight) +
+      'px · drag lines to adjust';
+  }
+
+  function autoDetectClean() {
+    if (!cleanImg) return;
+    const W = cleanImg.naturalWidth, H = cleanImg.naturalHeight;
+    const oc = document.createElement('canvas');
+    oc.width = W; oc.height = H;
+    const ctx = oc.getContext('2d');
+    ctx.drawImage(cleanImg, 0, 0);
+    const d = ctx.getImageData(0, 0, W, H).data;
+    const T = 20, MAX = 0.3;
+    function rowUniform(y) {
+      const base = y * W * 4;
+      const r = d[base], g = d[base + 1], b = d[base + 2];
+      for (let x = 1; x < W; x++) {
+        const o = (y * W + x) * 4;
+        if (Math.abs(d[o]-r) > T || Math.abs(d[o+1]-g) > T || Math.abs(d[o+2]-b) > T) return false;
+      }
+      return true;
+    }
+    let top = 0;
+    for (let y = 0; y < H * MAX; y++) { if (rowUniform(y)) top = y + 1; else break; }
+    let bot = H;
+    for (let y = H - 1; y > H * (1 - MAX); y--) { if (rowUniform(y)) bot = y; else break; }
+    cleanTopFrac = top / H; cleanBotFrac = bot / H;
+    drawCleanCanvas();
+  }
+
+  function cropDownload() {
+    if (!cleanImg) return;
+    const srcY = Math.round(cleanTopFrac * cleanImg.naturalHeight);
+    const srcH = Math.round((cleanBotFrac - cleanTopFrac) * cleanImg.naturalHeight);
+    if (srcH <= 0) return;
+    const oc = document.createElement('canvas');
+    oc.width = cleanImg.naturalWidth; oc.height = srcH;
+    oc.getContext('2d').drawImage(cleanImg, 0, srcY, cleanImg.naturalWidth, srcH, 0, 0, cleanImg.naturalWidth, srcH);
+    oc.toBlob(blob => {
+      const url = URL.createObjectURL(blob);
+      const a = Object.assign(document.createElement('a'), { href: url, download: 'clean.jpg' });
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+    }, 'image/jpeg', 0.95);
+  }
+
+  function captureFrame() {
+    const vid = document.getElementById('clean-video');
+    if (!vid.videoWidth) { showStatus('Video not loaded yet.', 'error'); return; }
+    const oc = document.createElement('canvas');
+    oc.width = vid.videoWidth; oc.height = vid.videoHeight;
+    oc.getContext('2d').drawImage(vid, 0, 0);
+    oc.toBlob(blob => {
+      const url = URL.createObjectURL(blob);
+      const a = Object.assign(document.createElement('a'), { href: url, download: 'frame.jpg' });
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+    }, 'image/jpeg', 0.95);
+  }
 </script>
 </body>
 </html>
