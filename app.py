@@ -1197,15 +1197,19 @@ def _try_scraperapi(shortcode, dest_dir):
         except Exception as e:
             print(f"[scraperapi] {ig_url}: {e}", flush=True)
 
-    # Try 2: fetch imginn / picuki through residential proxy (bypasses their 403 on GCP IPs)
+    # Try 2: fetch viewer/proxy sites through ScraperAPI
+    # ddinstagram.com directly mirrors Instagram's response from their own servers.
+    # imginn/picuki index Instagram posts; they may return 4xx but still embed CDN URLs.
     for page_url in [
+        f"https://ddinstagram.com/p/{shortcode}/",
         f"https://imginn.com/p/{shortcode}/",
         f"https://picuki.com/media/{shortcode}",
     ]:
         try:
             r = req_lib.get(BASE, params={"api_key": key, "url": page_url}, timeout=60)
             print(f"[scraperapi] {page_url} → {r.status_code} len={len(r.text)}", flush=True)
-            if not r.ok:
+            # Don't skip on 4xx — some sites return content with non-200 codes
+            if len(r.text) < 500:
                 continue
             found = _cdn_urls(r.text)
             print(f"[scraperapi] {page_url}: {len(found)} CDN URL(s)", flush=True)
