@@ -1142,6 +1142,55 @@ def _scrape_urls_from_html(html):
     return urls
 
 
+def _try_cobalt(shortcode, dest_dir):
+    """
+    Last-resort fallback: fetch via cobalt.tools public API.
+    Their servers are not GCP ranges, so posts blocked for us often work here.
+    Returns True if at least one file was saved.
+    """
+    for ig_url in [
+        f"https://www.instagram.com/reel/{shortcode}/",
+        f"https://www.instagram.com/p/{shortcode}/",
+    ]:
+        try:
+            r = req_lib.post(
+                "https://api.cobalt.tools/",
+                json={"url": ig_url},
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                },
+                timeout=30,
+            )
+            print(f"[cobalt] {ig_url} → {r.status_code} {r.text[:300]!r}", flush=True)
+            if not r.ok:
+                continue
+            data = r.json()
+            status = data.get("status")
+            if status in ("redirect", "tunnel"):
+                media_url = data["url"]
+                filename = data.get("filename", "")
+                ext = "mp4" if (".mp4" in filename or ".mp4" in media_url) else "jpg"
+                _save_url_plain(media_url, dest_dir / f"{shortcode}_00.{ext}")
+                print(f"[cobalt] saved 1 file via {status}", flush=True)
+                return True
+            if status == "picker":
+                saved = 0
+                for i, it in enumerate(data.get("picker", [])):
+                    u = it.get("url")
+                    if not u:
+                        continue
+                    ext = "mp4" if it.get("type") == "video" else "jpg"
+                    _save_url_plain(u, dest_dir / f"{shortcode}_{i:02d}.{ext}")
+                    saved += 1
+                if saved:
+                    print(f"[cobalt] saved {saved} file(s) from picker", flush=True)
+                    return True
+        except Exception as e:
+            print(f"[cobalt] {ig_url}: {e}", flush=True)
+    return False
+
+
 def download_post_via_html(shortcode, session, dest_dir):
     """Download single post without touching any rate-limited API endpoint."""
     errors = []
@@ -1190,6 +1239,12 @@ def download_post_via_html(shortcode, session, dest_dir):
         errors.append(f"?__a=1: HTTP {r.status_code} body={r.text[:100]}")
     except Exception as e:
         errors.append(f"?__a=1: {e}")
+
+    # Strategy 3: cobalt.tools — their IPs are not GCP ranges, so posts blocked for
+    # us often succeed here even when embed and ?__a=1 both return a restricted shell.
+    if _try_cobalt(shortcode, dest_dir):
+        return
+    errors.append("cobalt.tools: no media returned")
 
     raise Exception(f"single post download failed — {'; '.join(errors)}")
 
