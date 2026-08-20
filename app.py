@@ -1179,14 +1179,38 @@ def _try_scraperapi(shortcode, dest_dir):
 
     BASE = "http://api.scraperapi.com"
 
-    # Try 1: fetch Instagram directly through residential proxy
+    # Build Instagram session cookie if available (needed for limited-audience posts)
+    ig_session = os.environ.get("INSTAGRAM_SESSION_ID", "")
+    ig_cookie_header = f"sessionid={ig_session}; ds_user_id=0" if ig_session else ""
+
+    # Try 1: fetch Instagram directly through residential proxy.
+    # Pass session cookie if available so limited-audience posts are accessible.
+    # ScraperAPI forwards our headers verbatim when keep_headers=true.
     for ig_url in [
         f"https://www.instagram.com/p/{shortcode}/",
         f"https://www.instagram.com/reel/{shortcode}/",
     ]:
         try:
-            r = req_lib.get(BASE, params={"api_key": key, "url": ig_url}, timeout=60)
-            print(f"[scraperapi] {ig_url} → {r.status_code} len={len(r.text)}", flush=True)
+            params = {"api_key": key, "url": ig_url}
+            headers = {}
+            if ig_cookie_header:
+                params["keep_headers"] = "true"
+                headers = {
+                    "Cookie": ig_cookie_header,
+                    "User-Agent": (
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/125.0.0.0 Safari/537.36"
+                    ),
+                    "Accept": "text/html,application/xhtml+xml,*/*;q=0.9",
+                    "Accept-Language": "en-US,en;q=0.9",
+                }
+            print(
+                f"[scraperapi] {ig_url} (auth={'yes' if ig_cookie_header else 'no'})",
+                flush=True,
+            )
+            r = req_lib.get(BASE, params=params, headers=headers, timeout=60)
+            print(f"[scraperapi] → {r.status_code} len={len(r.text)}", flush=True)
             if r.ok and len(r.text) > 700_000:
                 found = _cdn_urls(r.text)
                 if found:
