@@ -7,6 +7,7 @@ import re
 import time
 import random
 from pathlib import Path
+from urllib.parse import unquote
 
 import requests as req_lib
 from flask import Flask, render_template, request, jsonify, send_from_directory
@@ -1180,7 +1181,7 @@ def _try_scraperapi(shortcode, dest_dir):
     BASE = "http://api.scraperapi.com"
 
     # Build Instagram session cookie if available (needed for limited-audience posts)
-    ig_session = os.environ.get("INSTAGRAM_SESSION_ID", "")
+    ig_session = unquote(os.environ.get("INSTAGRAM_SESSION_ID", ""))
     ig_cookie_header = f"sessionid={ig_session}; ds_user_id=0" if ig_session else ""
 
     # Try 1: fetch Instagram directly through residential proxy.
