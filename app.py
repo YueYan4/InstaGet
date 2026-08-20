@@ -1180,9 +1180,17 @@ def _try_scraperapi(shortcode, dest_dir):
 
     BASE = "http://api.scraperapi.com"
 
-    # Build Instagram session cookie if available (needed for limited-audience posts)
-    ig_session = unquote(os.environ.get("INSTAGRAM_SESSION_ID", ""))
-    ig_cookie_header = f"sessionid={ig_session}; ds_user_id=0" if ig_session else ""
+    # Build Instagram cookie header.
+    # Prefer INSTAGRAM_COOKIES (full browser cookie string) for best compatibility;
+    # fall back to individual components if only INSTAGRAM_SESSION_ID is set.
+    ig_cookie_header = os.environ.get("INSTAGRAM_COOKIES", "")
+    if not ig_cookie_header:
+        ig_session = unquote(os.environ.get("INSTAGRAM_SESSION_ID", ""))
+        ig_csrf = os.environ.get("INSTAGRAM_CSRF_TOKEN", "")
+        if ig_session:
+            ig_cookie_header = f"sessionid={ig_session}"
+            if ig_csrf:
+                ig_cookie_header += f"; csrftoken={ig_csrf}"
 
     # Try 1: fetch Instagram directly through residential proxy.
     # Pass session cookie if available so limited-audience posts are accessible.
