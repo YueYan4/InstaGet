@@ -1144,50 +1144,83 @@ def _scrape_urls_from_html(html):
 
 def _try_cobalt(shortcode, dest_dir):
     """
-    Last-resort fallback: fetch via cobalt.tools public API.
-    Their servers are not GCP ranges, so posts blocked for us often work here.
-    Returns True if at least one file was saved.
+    Last-resort fallback: download via cobalt community instances.
+    api.cobalt.tools now requires JWT auth; community instances running older
+    cobalt versions often do not.  We fetch the instances list dynamically and
+    skip any instance that returns a JWT/auth error.
     """
-    for ig_url in [
-        f"https://www.instagram.com/reel/{shortcode}/",
-        f"https://www.instagram.com/p/{shortcode}/",
+    candidates = []
+
+    # Fetch the community instances list — try both known URL variants
+    for list_url in [
+        "https://instances.cobalt.tools/instances.json",
+        "https://instances.cobalt.tools/",
     ]:
         try:
-            r = req_lib.post(
-                "https://api.cobalt.tools/",
-                json={"url": ig_url},
-                headers={
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                },
-                timeout=30,
-            )
-            print(f"[cobalt] {ig_url} → {r.status_code} {r.text[:300]!r}", flush=True)
-            if not r.ok:
-                continue
-            data = r.json()
-            status = data.get("status")
-            if status in ("redirect", "tunnel"):
-                media_url = data["url"]
-                filename = data.get("filename", "")
-                ext = "mp4" if (".mp4" in filename or ".mp4" in media_url) else "jpg"
-                _save_url_plain(media_url, dest_dir / f"{shortcode}_00.{ext}")
-                print(f"[cobalt] saved 1 file via {status}", flush=True)
-                return True
-            if status == "picker":
-                saved = 0
-                for i, it in enumerate(data.get("picker", [])):
-                    u = it.get("url")
-                    if not u:
-                        continue
-                    ext = "mp4" if it.get("type") == "video" else "jpg"
-                    _save_url_plain(u, dest_dir / f"{shortcode}_{i:02d}.{ext}")
-                    saved += 1
-                if saved:
-                    print(f"[cobalt] saved {saved} file(s) from picker", flush=True)
-                    return True
+            ir = req_lib.get(list_url, timeout=8, headers={"Accept": "application/json"})
+            print(f"[cobalt] instances {list_url} → {ir.status_code} len={len(ir.text)}", flush=True)
+            if ir.ok and ir.text.lstrip().startswith("["):
+                for inst in ir.json():
+                    api = (inst.get("api") or inst.get("url") or "").strip()
+                    if api and api not in candidates:
+                        candidates.append(api.rstrip("/") + "/")
+                if candidates:
+                    break
         except Exception as e:
-            print(f"[cobalt] {ig_url}: {e}", flush=True)
+            print(f"[cobalt] instances list error: {e}", flush=True)
+
+    # Always include the official instance as a last attempt
+    if "https://api.cobalt.tools/" not in candidates:
+        candidates.append("https://api.cobalt.tools/")
+
+    print(f"[cobalt] {len(candidates)} instance(s) to try", flush=True)
+
+    for api in candidates[:8]:
+        for ig_url in [
+            f"https://www.instagram.com/reel/{shortcode}/",
+            f"https://www.instagram.com/p/{shortcode}/",
+        ]:
+            try:
+                r = req_lib.post(
+                    api,
+                    json={"url": ig_url},
+                    headers={
+                        "Accept": "application/json",
+                        "Content-Type": "application/json",
+                    },
+                    timeout=25,
+                )
+                print(f"[cobalt] {api} {ig_url} → {r.status_code} {r.text[:200]!r}", flush=True)
+                if not r.ok:
+                    try:
+                        ec = r.json().get("error", {}).get("code", "")
+                        if "jwt" in ec or "auth" in ec:
+                            break  # this instance requires auth — skip to next
+                    except Exception:
+                        pass
+                    continue
+                data = r.json()
+                status = data.get("status")
+                if status in ("redirect", "tunnel"):
+                    url = data["url"]
+                    fn = data.get("filename", "")
+                    ext = "mp4" if (".mp4" in fn or ".mp4" in url) else "jpg"
+                    _save_url_plain(url, dest_dir / f"{shortcode}_00.{ext}")
+                    print(f"[cobalt] ✓ saved via {api}", flush=True)
+                    return True
+                if status == "picker":
+                    saved = 0
+                    for i, it in enumerate(data.get("picker", [])):
+                        u = it.get("url")
+                        if u:
+                            ext = "mp4" if it.get("type") == "video" else "jpg"
+                            _save_url_plain(u, dest_dir / f"{shortcode}_{i:02d}.{ext}")
+                            saved += 1
+                    if saved:
+                        print(f"[cobalt] ✓ saved {saved} item(s) via {api}", flush=True)
+                        return True
+            except Exception as e:
+                print(f"[cobalt] {api} error: {e}", flush=True)
     return False
 
 
