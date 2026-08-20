@@ -1142,85 +1142,58 @@ def _scrape_urls_from_html(html):
     return urls
 
 
-def _try_cobalt(shortcode, dest_dir):
+def _try_alt_frontend(shortcode, dest_dir):
     """
-    Last-resort fallback: download via cobalt community instances.
-    api.cobalt.tools now requires JWT auth; community instances running older
-    cobalt versions often do not.  We fetch the instances list dynamically and
-    skip any instance that returns a JWT/auth error.
+    Scrape alternative Instagram viewer sites for CDN URLs.
+    These sites fetch posts from Instagram via non-GCP IPs, so content blocked
+    for this server is often accessible via them.  We extract the resulting
+    Instagram CDN URLs from their HTML and download them directly — CDN
+    downloads (scontent-*.cdninstagram.com) are not IP-restricted.
     """
-    candidates = []
-
-    # Fetch the community instances list — try both known URL variants
-    for list_url in [
-        "https://instances.cobalt.tools/instances.json",
-        "https://instances.cobalt.tools/",
+    HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+        ),
+        "Accept": "text/html,application/xhtml+xml,*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate",
+    }
+    for page_url in [
+        f"https://imginn.com/p/{shortcode}/",
+        f"https://picuki.com/media/{shortcode}",
     ]:
         try:
-            ir = req_lib.get(list_url, timeout=8, headers={"Accept": "application/json"})
-            print(f"[cobalt] instances {list_url} → {ir.status_code} len={len(ir.text)}", flush=True)
-            if ir.ok and ir.text.lstrip().startswith("["):
-                for inst in ir.json():
-                    api = (inst.get("api") or inst.get("url") or "").strip()
-                    if api and api not in candidates:
-                        candidates.append(api.rstrip("/") + "/")
-                if candidates:
-                    break
-        except Exception as e:
-            print(f"[cobalt] instances list error: {e}", flush=True)
-
-    # Always include the official instance as a last attempt
-    if "https://api.cobalt.tools/" not in candidates:
-        candidates.append("https://api.cobalt.tools/")
-
-    print(f"[cobalt] {len(candidates)} instance(s) to try", flush=True)
-
-    for api in candidates[:8]:
-        for ig_url in [
-            f"https://www.instagram.com/reel/{shortcode}/",
-            f"https://www.instagram.com/p/{shortcode}/",
-        ]:
-            try:
-                r = req_lib.post(
-                    api,
-                    json={"url": ig_url},
-                    headers={
-                        "Accept": "application/json",
-                        "Content-Type": "application/json",
-                    },
-                    timeout=25,
-                )
-                print(f"[cobalt] {api} {ig_url} → {r.status_code} {r.text[:200]!r}", flush=True)
-                if not r.ok:
+            r = req_lib.get(page_url, headers=HEADERS, timeout=20, allow_redirects=True)
+            print(f"[alt] {page_url} → {r.status_code} len={len(r.text)}", flush=True)
+            if not r.ok:
+                continue
+            text = r.text.replace("&amp;", "&").replace("\\/", "/")
+            seen = set()
+            found = []
+            for u in re.findall(
+                r'https://(?:scontent|cdninstagram)[^\s"\'<>\\]+'
+                r'\.(?:mp4|jpg|jpeg|webp|png)[^\s"\'<>\\]*',
+                text,
+            ):
+                if u not in seen:
+                    seen.add(u)
+                    ext = "mp4" if ".mp4" in u else "jpg"
+                    found.append((ext, u))
+            print(f"[alt] {page_url}: {len(found)} CDN URL(s)", flush=True)
+            if found:
+                saved = 0
+                for i, (ext, u) in enumerate(found[:12]):
                     try:
-                        ec = r.json().get("error", {}).get("code", "")
-                        if "jwt" in ec or "auth" in ec:
-                            break  # this instance requires auth — skip to next
-                    except Exception:
-                        pass
-                    continue
-                data = r.json()
-                status = data.get("status")
-                if status in ("redirect", "tunnel"):
-                    url = data["url"]
-                    fn = data.get("filename", "")
-                    ext = "mp4" if (".mp4" in fn or ".mp4" in url) else "jpg"
-                    _save_url_plain(url, dest_dir / f"{shortcode}_00.{ext}")
-                    print(f"[cobalt] ✓ saved via {api}", flush=True)
+                        _save_url_plain(u, dest_dir / f"{shortcode}_{i:02d}.{ext}")
+                        saved += 1
+                    except Exception as dl_err:
+                        print(f"[alt] dl error: {dl_err}", flush=True)
+                if saved:
+                    print(f"[alt] ✓ saved {saved} file(s) via {page_url}", flush=True)
                     return True
-                if status == "picker":
-                    saved = 0
-                    for i, it in enumerate(data.get("picker", [])):
-                        u = it.get("url")
-                        if u:
-                            ext = "mp4" if it.get("type") == "video" else "jpg"
-                            _save_url_plain(u, dest_dir / f"{shortcode}_{i:02d}.{ext}")
-                            saved += 1
-                    if saved:
-                        print(f"[cobalt] ✓ saved {saved} item(s) via {api}", flush=True)
-                        return True
-            except Exception as e:
-                print(f"[cobalt] {api} error: {e}", flush=True)
+        except Exception as e:
+            print(f"[alt] {page_url}: {e}", flush=True)
     return False
 
 
@@ -1273,11 +1246,14 @@ def download_post_via_html(shortcode, session, dest_dir):
     except Exception as e:
         errors.append(f"?__a=1: {e}")
 
-    # Strategy 3: cobalt.tools — their IPs are not GCP ranges, so posts blocked for
-    # us often succeed here even when embed and ?__a=1 both return a restricted shell.
-    if _try_cobalt(shortcode, dest_dir):
+    # Strategy 3: alternative Instagram viewer frontends.
+    # Sites like imginn.com and picuki.com fetch from Instagram via non-GCP IPs, so
+    # posts that return a restricted shell for us are often accessible via them.
+    # We extract the Instagram CDN URLs from their HTML and download directly;
+    # CDN downloads (scontent-*.cdninstagram.com) are not IP-restricted.
+    if _try_alt_frontend(shortcode, dest_dir):
         return
-    errors.append("cobalt.tools: no media returned")
+    errors.append("alt frontends: no CDN URLs saved")
 
     raise Exception(f"single post download failed — {'; '.join(errors)}")
 
