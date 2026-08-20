@@ -1143,6 +1143,86 @@ def _scrape_urls_from_html(html):
     return urls
 
 
+_IG_SC_ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+
+def _shortcode_to_media_id(shortcode):
+    mid = 0
+    for ch in shortcode:
+        mid = mid * 64 + _IG_SC_ALPHA.index(ch)
+    return mid
+
+
+def _try_instagram_mobile_api(shortcode, dest_dir):
+    """
+    Instagram's mobile API (i.instagram.com/api/v1/) is accessible from GCP IPs
+    even when the web frontend returns a restricted shell.  Requires a valid
+    session cookie (INSTAGRAM_COOKIES or INSTAGRAM_SESSION_ID env var).
+    Returns structured JSON with direct CDN URLs — no HTML scraping needed.
+    """
+    ig_cookies = os.environ.get("INSTAGRAM_COOKIES", "")
+    if not ig_cookies:
+        ig_session = unquote(os.environ.get("INSTAGRAM_SESSION_ID", ""))
+        ig_csrf = os.environ.get("INSTAGRAM_CSRF_TOKEN", "")
+        if ig_session:
+            ig_cookies = f"sessionid={ig_session}"
+            if ig_csrf:
+                ig_cookies += f"; csrftoken={ig_csrf}"
+    if not ig_cookies:
+        return False
+
+    media_id = _shortcode_to_media_id(shortcode)
+    headers = {
+        "User-Agent": (
+            "Instagram 219.0.0.12.117 Android (26/8.0.0; 480dpi; 1080x1920; "
+            "OnePlus; ONEPLUS A3003; OnePlus3T; qcom; en_US; 314665256)"
+        ),
+        "Cookie": ig_cookies,
+        "X-IG-App-ID": "936619743392459",
+        "X-IG-Capabilities": "3brTvw8=",
+        "X-IG-Connection-Type": "WIFI",
+        "Accept-Language": "en-US",
+        "Accept": "*/*",
+    }
+    try:
+        r = req_lib.get(
+            f"https://i.instagram.com/api/v1/media/{media_id}/info/",
+            headers=headers,
+            timeout=20,
+        )
+        print(f"[mobile_api] {shortcode} ({media_id}) → {r.status_code}", flush=True)
+        if not r.ok:
+            return False
+
+        data = r.json()
+        items = data.get("items", [])
+        if not items:
+            return False
+
+        saved = 0
+        idx = 0
+        for item in items:
+            # Handle both single posts and carousels
+            medias = item.get("carousel_media") or [item]
+            for media in medias:
+                video = media.get("video_versions", [])
+                images = media.get("image_versions2", {}).get("candidates", [])
+                if video:
+                    url = video[0]["url"]
+                    _save_url_plain(url, dest_dir / f"{shortcode}_{idx:02d}.mp4")
+                    saved += 1; idx += 1
+                elif images:
+                    url = images[0]["url"]  # first candidate = highest resolution
+                    _save_url_plain(url, dest_dir / f"{shortcode}_{idx:02d}.jpg")
+                    saved += 1; idx += 1
+
+        if saved:
+            print(f"[mobile_api] ✓ {saved} item(s) saved", flush=True)
+            return True
+    except Exception as e:
+        print(f"[mobile_api] error: {e}", flush=True)
+    return False
+
+
 def _try_scraperapi(shortcode, dest_dir):
     """
     Use ScraperAPI (free tier: 1,000 req/month, no card required) to bypass
@@ -1306,7 +1386,14 @@ def download_post_via_html(shortcode, session, dest_dir):
     except Exception as e:
         errors.append(f"?__a=1: {e}")
 
-    # Strategy 3: ScraperAPI residential proxies.
+    # Strategy 3: Instagram mobile API (i.instagram.com/api/v1/).
+    # Accessible from GCP IPs even when the web frontend returns a restricted
+    # shell.  Requires INSTAGRAM_COOKIES or INSTAGRAM_SESSION_ID env var.
+    if _try_instagram_mobile_api(shortcode, dest_dir):
+        return
+    errors.append("mobile_api: failed or no cookies set")
+
+    # Strategy 4: ScraperAPI residential proxies.
     # Routes requests through non-datacenter IPs so Instagram and scraper sites
     # both respond with full content.  Only runs if SCRAPERAPI_KEY is set.
     if _try_scraperapi(shortcode, dest_dir):
