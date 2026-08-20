@@ -1142,58 +1142,81 @@ def _scrape_urls_from_html(html):
     return urls
 
 
-def _try_alt_frontend(shortcode, dest_dir):
+def _try_scraperapi(shortcode, dest_dir):
     """
-    Scrape alternative Instagram viewer sites for CDN URLs.
-    These sites fetch posts from Instagram via non-GCP IPs, so content blocked
-    for this server is often accessible via them.  We extract the resulting
-    Instagram CDN URLs from their HTML and download them directly — CDN
-    downloads (scontent-*.cdninstagram.com) are not IP-restricted.
+    Use ScraperAPI (free tier: 1,000 req/month, no card required) to bypass
+    GCP IP blocks.  ScraperAPI routes requests through residential proxies, so
+    Instagram and anti-scraping sites both respond normally.
+    Requires SCRAPERAPI_KEY env var.
     """
-    HEADERS = {
-        "User-Agent": (
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-        ),
-        "Accept": "text/html,application/xhtml+xml,*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate",
-    }
+    key = os.environ.get("SCRAPERAPI_KEY", "")
+    if not key:
+        print("[scraperapi] SCRAPERAPI_KEY not set — skipping", flush=True)
+        return False
+
+    def _cdn_urls(text):
+        text = text.replace("&amp;", "&").replace("\\/", "/").replace("\\u0026", "&")
+        seen, found = set(), []
+        for u in re.findall(
+            r'https://(?:scontent|cdninstagram)[^\s"\'<>\\]+'
+            r'\.(?:mp4|jpg|jpeg|webp|png)[^\s"\'<>\\]*',
+            text,
+        ):
+            if u not in seen:
+                seen.add(u)
+                found.append(("mp4" if ".mp4" in u else "jpg", u))
+        return found
+
+    def _save_found(found):
+        saved = 0
+        for i, (ext, u) in enumerate(found[:12]):
+            try:
+                _save_url_plain(u, dest_dir / f"{shortcode}_{i:02d}.{ext}")
+                saved += 1
+            except Exception as e:
+                print(f"[scraperapi] dl error: {e}", flush=True)
+        return saved
+
+    BASE = "http://api.scraperapi.com"
+
+    # Try 1: fetch Instagram directly through residential proxy
+    for ig_url in [
+        f"https://www.instagram.com/p/{shortcode}/",
+        f"https://www.instagram.com/reel/{shortcode}/",
+    ]:
+        try:
+            r = req_lib.get(BASE, params={"api_key": key, "url": ig_url}, timeout=60)
+            print(f"[scraperapi] {ig_url} → {r.status_code} len={len(r.text)}", flush=True)
+            if r.ok and len(r.text) > 700_000:
+                found = _cdn_urls(r.text)
+                if found:
+                    saved = _save_found(found)
+                    if saved:
+                        print(f"[scraperapi] ✓ {saved} file(s) via Instagram", flush=True)
+                        return True
+        except Exception as e:
+            print(f"[scraperapi] {ig_url}: {e}", flush=True)
+
+    # Try 2: fetch imginn / picuki through residential proxy (bypasses their 403 on GCP IPs)
     for page_url in [
         f"https://imginn.com/p/{shortcode}/",
         f"https://picuki.com/media/{shortcode}",
     ]:
         try:
-            r = req_lib.get(page_url, headers=HEADERS, timeout=20, allow_redirects=True)
-            print(f"[alt] {page_url} → {r.status_code} len={len(r.text)}", flush=True)
+            r = req_lib.get(BASE, params={"api_key": key, "url": page_url}, timeout=60)
+            print(f"[scraperapi] {page_url} → {r.status_code} len={len(r.text)}", flush=True)
             if not r.ok:
                 continue
-            text = r.text.replace("&amp;", "&").replace("\\/", "/")
-            seen = set()
-            found = []
-            for u in re.findall(
-                r'https://(?:scontent|cdninstagram)[^\s"\'<>\\]+'
-                r'\.(?:mp4|jpg|jpeg|webp|png)[^\s"\'<>\\]*',
-                text,
-            ):
-                if u not in seen:
-                    seen.add(u)
-                    ext = "mp4" if ".mp4" in u else "jpg"
-                    found.append((ext, u))
-            print(f"[alt] {page_url}: {len(found)} CDN URL(s)", flush=True)
+            found = _cdn_urls(r.text)
+            print(f"[scraperapi] {page_url}: {len(found)} CDN URL(s)", flush=True)
             if found:
-                saved = 0
-                for i, (ext, u) in enumerate(found[:12]):
-                    try:
-                        _save_url_plain(u, dest_dir / f"{shortcode}_{i:02d}.{ext}")
-                        saved += 1
-                    except Exception as dl_err:
-                        print(f"[alt] dl error: {dl_err}", flush=True)
+                saved = _save_found(found)
                 if saved:
-                    print(f"[alt] ✓ saved {saved} file(s) via {page_url}", flush=True)
+                    print(f"[scraperapi] ✓ {saved} file(s) via {page_url}", flush=True)
                     return True
         except Exception as e:
-            print(f"[alt] {page_url}: {e}", flush=True)
+            print(f"[scraperapi] {page_url}: {e}", flush=True)
+
     return False
 
 
@@ -1246,14 +1269,12 @@ def download_post_via_html(shortcode, session, dest_dir):
     except Exception as e:
         errors.append(f"?__a=1: {e}")
 
-    # Strategy 3: alternative Instagram viewer frontends.
-    # Sites like imginn.com and picuki.com fetch from Instagram via non-GCP IPs, so
-    # posts that return a restricted shell for us are often accessible via them.
-    # We extract the Instagram CDN URLs from their HTML and download directly;
-    # CDN downloads (scontent-*.cdninstagram.com) are not IP-restricted.
-    if _try_alt_frontend(shortcode, dest_dir):
+    # Strategy 3: ScraperAPI residential proxies.
+    # Routes requests through non-datacenter IPs so Instagram and scraper sites
+    # both respond with full content.  Only runs if SCRAPERAPI_KEY is set.
+    if _try_scraperapi(shortcode, dest_dir):
         return
-    errors.append("alt frontends: no CDN URLs saved")
+    errors.append("scraperapi: no media saved")
 
     raise Exception(f"single post download failed — {'; '.join(errors)}")
 
